@@ -12,6 +12,7 @@ export const executionRouter = createTRPCRouter({
           z.object({
             projectId: z.string(),
             actualHours: z.number().min(0),
+            markCompleted: z.boolean().default(false),
             notes: z.string().optional(),
           })
         ),

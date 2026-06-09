@@ -10,6 +10,10 @@ import {
   type ProjectIntelligenceCard,
   type ReallocationRecord,
 } from "./cognitive-controller";
+import {
+  resolveCloseOutProjectUpdate,
+  type CloseOutProjectResult,
+} from "./close-out-completion";
 import { packDay } from "./day-packer";
 import { generatePlan } from "./engine";
 import { analyzeExecution, computeLearningUpdates } from "./feedback";
@@ -17,6 +21,7 @@ import { scoreProjects } from "./scoring";
 import type {
   AdHocInput,
   CapacityConfig,
+  EffortSize,
   FixedEventInput,
   LearningState,
   ProjectInput,
@@ -778,7 +783,12 @@ export async function submitDailyCloseOut(
   userId: string,
   input: {
     date: string;
-    actuals: { projectId: string; actualHours: number; notes?: string }[];
+    actuals: {
+      projectId: string;
+      actualHours: number;
+      markCompleted?: boolean;
+      notes?: string;
+    }[];
     totalWastedHours: number;
   }
 ) {
@@ -799,12 +809,51 @@ export async function submitDailyCloseOut(
     }
   }
 
-  const actuals = input.actuals.map((a) => ({
-    projectId: a.projectId,
-    plannedHours: plannedMap.get(a.projectId) ?? 0,
-    actualHours: a.actualHours,
-    notes: a.notes ?? "",
-  }));
+  const projectIds = input.actuals.map((a) => a.projectId);
+  const projectRecords = await db.project.findMany({
+    where: { userId, id: { in: projectIds } },
+    select: {
+      id: true,
+      name: true,
+      effortSize: true,
+      estimatedHoursRemaining: true,
+      status: true,
+    },
+  });
+  const projectById = new Map(projectRecords.map((p) => [p.id, p]));
+
+  const completionResults: CloseOutProjectResult[] = [];
+
+  const actuals = input.actuals.map((a) => {
+    const plannedHours = plannedMap.get(a.projectId) ?? 0;
+    const project = projectById.get(a.projectId);
+    const estRemaining = project?.estimatedHoursRemaining
+      ? Number(project.estimatedHoursRemaining)
+      : null;
+
+    const completion = project
+      ? resolveCloseOutProjectUpdate({
+          projectId: a.projectId,
+          actualHours: a.actualHours,
+          plannedHours,
+          markCompleted: a.markCompleted ?? false,
+          estimatedHoursRemaining: estRemaining,
+          effortSize: (project.effortSize ?? "medium") as EffortSize,
+        })
+      : null;
+
+    if (completion) completionResults.push(completion);
+
+    const noteParts = [a.notes ?? ""].filter(Boolean);
+    if (completion?.completed) noteParts.push(`[completed] ${completion.reason}`);
+
+    return {
+      projectId: a.projectId,
+      plannedHours,
+      actualHours: a.actualHours,
+      notes: noteParts.join(" · "),
+    };
+  });
 
   const settings = await db.capacitySettings.findUnique({ where: { userId } });
   const maxShare = settings?.maxProjectSharePct ?? 40;
@@ -865,6 +914,29 @@ export async function submitDailyCloseOut(
     });
   }
 
+  const completedProjects: { projectId: string; name: string; reason: string }[] = [];
+
+  for (const result of completionResults) {
+    const project = projectById.get(result.projectId);
+    if (!project || project.status === "done") continue;
+
+    await db.project.update({
+      where: { id: result.projectId },
+      data: {
+        status: result.status,
+        estimatedHoursRemaining: result.estimatedHoursRemaining,
+      },
+    });
+
+    if (result.completed) {
+      completedProjects.push({
+        projectId: result.projectId,
+        name: project.name,
+        reason: result.reason,
+      });
+    }
+  }
+
   for (const l of learningUpdates) {
     await db.planningLearning.upsert({
       where: { projectId: l.projectId },
@@ -890,5 +962,5 @@ export async function submitDailyCloseOut(
   const tomorrow = addDays(input.date, 1);
   await regeneratePlan(db, userId, tomorrow);
 
-  return { report, feedback, learningUpdates };
+  return { report, feedback, learningUpdates, completedProjects };
 }

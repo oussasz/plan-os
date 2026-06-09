@@ -1,8 +1,12 @@
 "use client";
 
+import { useMemo } from "react";
 import { RefreshCw } from "lucide-react";
 
-import { CloseOutDialog } from "~/components/plan/close-out-dialog";
+import {
+  CloseOutDialog,
+  type CloseOutProject,
+} from "~/components/plan/close-out-dialog";
 import { CognitiveDayPanel } from "~/components/plan/cognitive-day-panel";
 import { TodayAllocationSummary } from "~/components/plan/today-allocation-summary";
 import { TimelineBlocks } from "~/components/plan/timeline-blocks";
@@ -36,6 +40,30 @@ export default function TodayPage() {
     .filter((b) => b.projectId && !["break", "lunch", "buffer"].includes(b.blockType))
     .reduce((sum, b) => sum + blockHours(b.startTime, b.endTime), 0);
 
+  const closeOutProjects = useMemo((): CloseOutProject[] => {
+    const map = new Map<string, CloseOutProject>();
+    for (const b of plan?.blocks ?? []) {
+      if (!b.projectId || ["break", "lunch", "buffer"].includes(b.blockType)) continue;
+      const h = blockHours(b.startTime, b.endTime);
+      const name = b.project?.name ?? b.reasonShort;
+      const existing = map.get(b.projectId);
+      if (existing) {
+        existing.plannedHours = Math.round((existing.plannedHours + h) * 10) / 10;
+      } else {
+        map.set(b.projectId, { id: b.projectId, name, plannedHours: h, estimatedHoursRemaining: null });
+      }
+    }
+    for (const p of projects ?? []) {
+      if (p.status !== "active") continue;
+      const entry = map.get(p.id);
+      const est = p.estimatedHoursRemaining ? Number(p.estimatedHoursRemaining) : null;
+      if (entry) {
+        entry.estimatedHoursRemaining = est;
+      }
+    }
+    return [...map.values()].sort((a, b) => b.plannedHours - a.plannedHours);
+  }, [plan?.blocks, projects]);
+
   return (
     <main className="px-4 py-6">
       <header className="mb-6 flex items-start justify-between gap-3">
@@ -61,13 +89,7 @@ export default function TodayPage() {
           </Button>
           <CloseOutDialog
             date={data?.today ?? new Date().toISOString().split("T")[0]!}
-            projects={(projects ?? []).filter((p) => p.status === "active").map((p) => ({
-              id: p.id,
-              name: p.name,
-            }))}
-            plannedByProject={Object.fromEntries(
-              (data?.cognitive?.plannedVsActual ?? []).map((r) => [r.projectId, r.plannedHours])
-            )}
+            projects={closeOutProjects}
             disabled={data?.isClosed}
           />
         </div>
