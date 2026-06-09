@@ -3,7 +3,7 @@
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { ChipSelect } from "~/components/ui/chip-select";
-import type { ProjectDraftForm } from "./project-wizard";
+import type { ProjectDraftForm } from "~/lib/project-form";
 
 export function ProjectWizardStepBasic({
   form,

@@ -2,7 +2,7 @@
 
 import { Badge } from "~/components/ui/badge";
 import { ChipSelect } from "~/components/ui/chip-select";
-import type { ProjectDraftForm } from "./project-wizard";
+import type { ProjectDraftForm } from "~/lib/project-form";
 
 export function ProjectWizardStepIntelligence({
   form,

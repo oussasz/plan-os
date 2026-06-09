@@ -10,60 +10,18 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "~/components/ui/dialog";
+import { INITIAL_PROJECT_FORM, toDraftInput } from "~/lib/project-form";
+import type { ProjectDraftForm } from "~/lib/project-form";
 import { api } from "~/trpc/react";
 import { ProjectIntelligencePreview } from "./project-intelligence-preview";
 import { ProjectWizardStepBasic } from "./project-wizard-step-basic";
 import { ProjectWizardStepIntelligence } from "./project-wizard-step-intelligence";
 
-export type ProjectDraftForm = {
-  name: string;
-  projectType: "client" | "personal" | "maintenance" | "learning" | "emergency";
-  effortSize: "small" | "medium" | "large";
-  importanceLevel: 1 | 2 | 3 | 4 | 5;
-  urgencyLevel: "low" | "medium" | "high" | "critical";
-  urgencyOverride: boolean;
-  focusDemand: "low" | "medium" | "high";
-  overImmersionRisk: "low" | "medium" | "high";
-  flexibility: "fixed" | "flexible";
-  deadline: string;
-  hours: string;
-};
-
-const INITIAL: ProjectDraftForm = {
-  name: "",
-  projectType: "personal",
-  effortSize: "medium",
-  importanceLevel: 3,
-  urgencyLevel: "medium",
-  urgencyOverride: false,
-  focusDemand: "medium",
-  overImmersionRisk: "medium",
-  flexibility: "flexible",
-  deadline: "",
-  hours: "",
-};
-
-function toDraftInput(form: ProjectDraftForm) {
-  return {
-    name: form.name,
-    projectType: form.projectType,
-    effortSize: form.effortSize,
-    importanceLevel: form.importanceLevel,
-    urgencyLevel: form.urgencyLevel,
-    urgencyOverride: form.urgencyOverride,
-    focusDemand: form.focusDemand,
-    overImmersionRisk: form.overImmersionRisk,
-    flexibility: form.flexibility,
-    deadline: form.deadline || null,
-    estimatedHoursRemaining: form.hours ? Number(form.hours) : null,
-  };
-}
-
 export function ProjectWizard() {
   const utils = api.useUtils();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState<ProjectDraftForm>(INITIAL);
+  const [form, setForm] = useState<ProjectDraftForm>(INITIAL_PROJECT_FORM);
 
   const draftInput = useMemo(() => toDraftInput(form), [form]);
 
@@ -78,14 +36,14 @@ export function ProjectWizard() {
       await utils.planning.getWeek.invalidate();
       setOpen(false);
       setStep(0);
-      setForm(INITIAL);
+      setForm(INITIAL_PROJECT_FORM);
     },
   });
 
   useEffect(() => {
     if (!open) {
       setStep(0);
-      setForm(INITIAL);
+      setForm(INITIAL_PROJECT_FORM);
     }
   }, [open]);
 

@@ -1,30 +1,25 @@
 "use client";
 
-import { AlertTriangle } from "lucide-react";
+import { useState } from "react";
 
+import {
+  ProjectDetailDialog,
+  ProjectListItem,
+} from "~/components/projects/project-detail-dialog";
 import { ProjectWizard } from "~/components/projects/project-wizard";
-import { Badge } from "~/components/ui/badge";
-import { api } from "~/trpc/react";
+import { api, type RouterOutputs } from "~/trpc/react";
 
-const TYPE_LABELS: Record<string, string> = {
-  client: "Client",
-  personal: "Personal",
-  maintenance: "Maintenance",
-  learning: "Learning",
-  emergency: "Emergency",
-};
-
-function priorityBand(level: number): string {
-  if (level >= 4) return "high";
-  if (level >= 3) return "medium";
-  return "low";
-}
+type ProjectRow = RouterOutputs["project"]["list"][number];
 
 export default function ProjectsPage() {
   const { data: projects, isLoading } = api.project.list.useQuery();
-  const deleteProject = api.project.delete.useMutation({
-    onSuccess: () => void api.useUtils().project.list.invalidate(),
-  });
+  const [selected, setSelected] = useState<ProjectRow | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  function openProject(project: ProjectRow) {
+    setSelected(project);
+    setDetailOpen(true);
+  }
 
   return (
     <main className="px-4 py-6">
@@ -45,41 +40,21 @@ export default function ProjectsPage() {
       ) : (
         <ul className="flex flex-col gap-3">
           {(projects ?? []).map((p) => (
-            <li
-              key={p.id}
-              className="flex items-center justify-between rounded-xl border bg-white p-4 shadow-sm"
-            >
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-semibold text-slate-900">{p.name}</p>
-                  {p.overImmersionRisk === "high" && (
-                    <AlertTriangle className="h-4 w-4 text-amber-600" aria-label="High over-immersion risk" />
-                  )}
-                </div>
-                <p className="text-sm text-slate-500">
-                  {TYPE_LABELS[p.projectType] ?? p.projectType}
-                  {p.maxDailyHours ? ` · max ${Number(p.maxDailyHours)}h/day` : ""}
-                  {p.deadline ? ` · due ${p.deadline.toISOString().split("T")[0]}` : ""}
-                </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Badge variant="secondary">{p.status}</Badge>
-                  <Badge variant="default">{priorityBand(p.importanceLevel)} priority</Badge>
-                  <Badge variant="secondary">{p.focusDemand} focus</Badge>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="text-sm text-red-600"
-                onClick={() => {
-                  if (confirm(`Delete ${p.name}?`)) deleteProject.mutate({ id: p.id });
-                }}
-              >
-                Delete
-              </button>
+            <li key={p.id}>
+              <ProjectListItem project={p} onOpen={() => openProject(p)} />
             </li>
           ))}
         </ul>
       )}
+
+      <ProjectDetailDialog
+        project={selected}
+        open={detailOpen}
+        onOpenChange={(open) => {
+          setDetailOpen(open);
+          if (!open) setSelected(null);
+        }}
+      />
     </main>
   );
 }

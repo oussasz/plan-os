@@ -30,6 +30,37 @@ export const projectRouter = createTRPCRouter({
     });
   }),
 
+  get: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
+    const project = await ctx.db.project.findUnique({
+      where: { id: input.id, userId: ctx.session.user.id },
+      include: {
+        fixedEvents: { orderBy: [{ date: "asc" }, { startTime: "asc" }] },
+        adHocItems: { orderBy: { createdAt: "desc" } },
+        planningLearning: true,
+      },
+    });
+    if (!project) return null;
+
+    const draft = {
+      name: project.name,
+      projectType: project.projectType as z.infer<typeof projectDraftSchema>["projectType"],
+      effortSize: project.effortSize as z.infer<typeof projectDraftSchema>["effortSize"],
+      importanceLevel: project.importanceLevel,
+      urgencyLevel: project.urgencyLevel as z.infer<typeof projectDraftSchema>["urgencyLevel"],
+      urgencyOverride: project.urgencyOverride,
+      focusDemand: project.focusDemand as z.infer<typeof projectDraftSchema>["focusDemand"],
+      overImmersionRisk: project.overImmersionRisk as z.infer<typeof projectDraftSchema>["overImmersionRisk"],
+      flexibility: project.flexibility as z.infer<typeof projectDraftSchema>["flexibility"],
+      deadline: project.deadline ? project.deadline.toISOString().split("T")[0]! : null,
+      estimatedHoursRemaining: project.estimatedHoursRemaining
+        ? Number(project.estimatedHoursRemaining)
+        : null,
+    };
+    const intelligence = analyzeProjectIntelligence(draft);
+
+    return { project, intelligence };
+  }),
+
   previewIntelligence: protectedProcedure.input(projectDraftSchema).query(async ({ input }) => {
     return analyzeProjectIntelligence({
       name: input.name,
