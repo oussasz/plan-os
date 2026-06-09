@@ -1,29 +1,38 @@
-# Create T3 App
+# Plan OS
 
-This is a [T3 Stack](https://create.t3.gg/) project bootstrapped with `create-t3-app`.
+Mobile-first cognitive planning system built with the [T3 Stack](https://create.t3.gg/).
 
-## What's next? How do I make an app with this?
+## Features
 
-We try to keep this project as simple as possible, so you can start with just the scaffolding we set up for you, and add additional things later when they become necessary.
+- **Today** — hour-by-hour focus timeline with locked meetings and deep-work blocks
+- **Week** — 7-day strip, per-project allocations, tap-to-preview daily timeline
+- **Month** — project hour budgets and weekly milestone notes
+- **Projects** — dialog-based project creation; engine computes priority (no manual sliders)
+- **Close-out** — end-of-day actuals → anti-drift learning → replan from tomorrow
 
-If you are not familiar with the different technologies used in this project, please refer to the respective docs. If you still are in the wind, please join our [Discord](https://t3.gg/discord) and ask for help.
+## Stack
 
-- [Next.js](https://nextjs.org)
-- [NextAuth.js](https://next-auth.js.org)
-- [Prisma](https://prisma.io)
-- [Drizzle](https://orm.drizzle.team)
-- [Tailwind CSS](https://tailwindcss.com)
-- [tRPC](https://trpc.io)
+- Next.js 15 App Router
+- tRPC + Prisma + PostgreSQL (Supabase)
+- NextAuth credentials (single-user)
+- Tailwind CSS v4 + shadcn-style primitives
+- PWA manifest (`/manifest.json`)
 
-## Learn More
+## Local development
 
-To learn more about the [T3 Stack](https://create.t3.gg/), take a look at the following resources:
+```bash
+npm install
+cp .env.example .env   # set DATABASE_URL and AUTH_SECRET
+npx prisma generate
+npx prisma db push     # or migrate deploy
+npm run dev
+```
 
-- [Documentation](https://create.t3.gg/)
-- [Learn the T3 Stack](https://create.t3.gg/en/faq#what-learning-resources-are-currently-available) — Check out these awesome tutorials
+Sign in with credentials from `.env` (`AUTH_EMAIL` / `AUTH_PASSWORD`, defaults in `.env.example`).
 
-You can check out the [create-t3-app GitHub repository](https://github.com/t3-oss/create-t3-app) — your feedback and contributions are welcome!
+## Production
 
-## How do I deploy this?
+- **App:** https://plan-os-nine.vercel.app
+- **Repo:** https://github.com/oussasz/plan-os
 
-Follow our deployment guides for [Vercel](https://create.t3.gg/en/deployment/vercel), [Netlify](https://create.t3.gg/en/deployment/netlify) and [Docker](https://create.t3.gg/en/deployment/docker) for more information.
+Required env vars: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_EMAIL`, `AUTH_PASSWORD`.
