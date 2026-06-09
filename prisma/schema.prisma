@@ -1,0 +1,266 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Auth (NextAuth) ---
+
+model Account {
+  id                       String  @id @default(cuid())
+  userId                   String
+  type                     String
+  provider                 String
+  providerAccountId        String
+  refresh_token            String?
+  access_token             String?
+  expires_at               Int?
+  token_type               String?
+  scope                    String?
+  id_token                 String?
+  session_state            String?
+  user                     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refresh_token_expires_in Int?
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+
+  capacitySettings CapacitySettings?
+  projects         Project[]
+  fixedEvents      FixedEvent[]
+  adHocItems       AdHocItem[]
+  monthlyPlans     MonthlyPlan[]
+  weeklyPlans      WeeklyPlan[]
+  dailyPlans       DailyPlan[]
+  executionReports ExecutionReport[]
+  planningLearning PlanningLearning[]
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// --- Planning domain ---
+
+model CapacitySettings {
+  id                      String   @id @default(cuid())
+  userId                  String   @unique
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dailyCapacityHours      Decimal  @default(10) @db.Decimal(4, 1)
+  workStartTime           String   @default("09:00")
+  blockMinutes            Int      @default(90)
+  breakMinutes            Int      @default(15)
+  lunchMinutes            Int      @default(60)
+  lunchStartTime          String   @default("12:30")
+  maxProjectSharePct      Int      @default(40)
+  maxContextSwitches      Int      @default(3)
+  bufferMinutes           Int      @default(60)
+  workDays                Json     @default("[1,2,3,4,5]")
+  weekdayHours            Json     @default("{\"1\":10,\"2\":10,\"3\":10,\"4\":10,\"5\":10,\"6\":0,\"7\":0}")
+  timezone                String   @default("Africa/Algiers")
+  updatedAt               DateTime @updatedAt
+}
+
+model Project {
+  id                      String          @id @default(cuid())
+  userId                  String
+  user                    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                    String
+  projectType             String          @default("personal")
+  status                  String          @default("active")
+  schedulingMode          String          @default("flexible")
+  importanceWeight        Int             @default(5)
+  deadline                DateTime?       @db.Date
+  estimatedHoursRemaining Decimal?        @db.Decimal(6, 1)
+  maxDailyHours           Decimal?        @db.Decimal(4, 1)
+  requiresDeepFocus       Boolean         @default(true)
+  notes                   String          @default("")
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+
+  fixedEvents       FixedEvent[]
+  adHocItems        AdHocItem[]
+  weeklyAllocations WeeklyAllocation[]
+  scheduleBlocks    ScheduleBlock[]
+  executionActuals  ExecutionActual[]
+  planningLearning  PlanningLearning?
+
+  @@index([userId, status])
+}
+
+model FixedEvent {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String?
+  project     Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  title       String
+  eventType   String    @default("meeting")
+  date        DateTime  @db.Date
+  startTime   String
+  endTime     String
+  notes       String    @default("")
+  createdAt   DateTime  @default(now())
+
+  scheduleBlocks ScheduleBlock[]
+
+  @@index([userId, date])
+}
+
+model AdHocItem {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId    String?
+  project      Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  title        String
+  urgencyBoost Decimal   @default(0.5) @db.Decimal(3, 2)
+  expiresAt    DateTime? @db.Date
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model MonthlyPlan {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  monthStart     DateTime @db.Date
+  projectBudgets Json     @default("[]")
+  weekMilestones Json     @default("[]")
+  generatedAt    DateTime @default(now())
+
+  @@unique([userId, monthStart])
+}
+
+model WeeklyPlan {
+  id                  String   @id @default(cuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weekStart           DateTime @db.Date
+  totalCapacityHours  Decimal  @default(0) @db.Decimal(5, 1)
+  generatedAt         DateTime @default(now())
+
+  allocations WeeklyAllocation[]
+  dailyPlans  DailyPlan[]
+
+  @@unique([userId, weekStart])
+}
+
+model WeeklyAllocation {
+  id                String     @id @default(cuid())
+  weeklyPlanId      String
+  weeklyPlan        WeeklyPlan @relation(fields: [weeklyPlanId], references: [id], onDelete: Cascade)
+  projectId         String
+  project           Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  plannedHours      Decimal    @default(0) @db.Decimal(5, 1)
+  priorityScore     Decimal    @default(0) @db.Decimal(6, 3)
+  driftPenalty      Decimal    @default(1) @db.Decimal(4, 2)
+
+  @@unique([weeklyPlanId, projectId])
+}
+
+model DailyPlan {
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weeklyPlanId       String?
+  weeklyPlan         WeeklyPlan? @relation(fields: [weeklyPlanId], references: [id], onDelete: SetNull)
+  date               DateTime @db.Date
+  totalCapacityHours Decimal  @default(10) @db.Decimal(4, 1)
+  generatedAt        DateTime @default(now())
+  efficiencyScore    Int?
+
+  blocks           ScheduleBlock[]
+  executionReports ExecutionReport[]
+
+  @@unique([userId, date])
+}
+
+model ScheduleBlock {
+  id             String     @id @default(cuid())
+  dailyPlanId    String
+  dailyPlan      DailyPlan  @relation(fields: [dailyPlanId], references: [id], onDelete: Cascade)
+  startTime      String
+  endTime        String
+  blockType      String
+  projectId      String?
+  project        Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  fixedEventId   String?
+  fixedEvent     FixedEvent? @relation(fields: [fixedEventId], references: [id], onDelete: SetNull)
+  isLocked       Boolean    @default(false)
+  sortOrder      Int        @default(0)
+  reasonShort    String     @default("")
+
+  @@index([dailyPlanId])
+}
+
+model ExecutionReport {
+  id                    String   @id @default(cuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dailyPlanId           String?
+  dailyPlan             DailyPlan? @relation(fields: [dailyPlanId], references: [id], onDelete: SetNull)
+  date                  DateTime @db.Date
+  totalProductiveHours  Decimal  @default(0) @db.Decimal(4, 1)
+  totalWastedHours      Decimal  @default(0) @db.Decimal(4, 1)
+  efficiencyScore       Int      @default(0)
+  submittedAt           DateTime @default(now())
+
+  actuals ExecutionActual[]
+
+  @@unique([userId, date])
+}
+
+model ExecutionActual {
+  id               String          @id @default(cuid())
+  reportId         String
+  report           ExecutionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  projectId        String
+  project          Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  plannedHours     Decimal         @default(0) @db.Decimal(4, 1)
+  actualHours      Decimal         @default(0) @db.Decimal(4, 1)
+  notes            String          @default("")
+
+  @@unique([reportId, projectId])
+}
+
+model PlanningLearning {
+  id                      String  @id @default(cuid())
+  userId                  String
+  user                    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId               String  @unique
+  project                 Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  overfocusStreak         Int     @default(0)
+  neglectDays             Int     @default(0)
+  driftPenaltyMultiplier  Decimal @default(1) @db.Decimal(4, 2)
+  avgActualShare          Decimal @default(0) @db.Decimal(5, 2)
+  lastTouchedAt           DateTime? @db.Date
+
+  @@unique([userId, projectId])
+}

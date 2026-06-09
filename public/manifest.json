@@ -1,0 +1,17 @@
+{
+  "name": "Plan OS",
+  "short_name": "Plan OS",
+  "description": "Mobile-first cognitive planning",
+  "start_url": "/today",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#7c3aed",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}
