@@ -3,6 +3,7 @@
 import { RefreshCw } from "lucide-react";
 
 import { CloseOutDialog } from "~/components/plan/close-out-dialog";
+import { CognitiveDayPanel } from "~/components/plan/cognitive-day-panel";
 import { TodayAllocationSummary } from "~/components/plan/today-allocation-summary";
 import { TimelineBlocks } from "~/components/plan/timeline-blocks";
 import { Button } from "~/components/ui/button";
@@ -40,7 +41,7 @@ export default function TodayPage() {
       <header className="mb-6 flex items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-violet-600">Today</p>
-          <h1 className="text-2xl font-bold text-slate-900">Focus Plan</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Cognitive Controller</h1>
           <p className="text-sm text-slate-500">
             {data?.nowTime ? `Now ${data.nowTime}` : "Today"}
             {data?.timezone ? ` (${data.timezone})` : ""}
@@ -64,6 +65,9 @@ export default function TodayPage() {
               id: p.id,
               name: p.name,
             }))}
+            plannedByProject={Object.fromEntries(
+              (data?.cognitive?.plannedVsActual ?? []).map((r) => [r.projectId, r.plannedHours])
+            )}
             disabled={data?.isClosed}
           />
         </div>
@@ -79,6 +83,7 @@ export default function TodayPage() {
         <p className="text-slate-500">Loading plan…</p>
       ) : (
         <>
+          <CognitiveDayPanel cognitive={data?.cognitive} />
           <TodayAllocationSummary blocks={plan?.blocks ?? []} nowMinutes={data?.nowMinutes} />
           <TimelineBlocks blocks={plan?.blocks ?? []} nowMinutes={data?.nowMinutes} />
         </>

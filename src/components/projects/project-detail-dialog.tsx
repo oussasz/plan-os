@@ -63,6 +63,7 @@ export function ProjectDetailDialog({
       await utils.project.getById.invalidate({ id: projectId! });
       await utils.planning.getToday.invalidate();
       await utils.planning.getWeek.invalidate();
+      await utils.project.intelligenceCards.invalidate();
       setMode("view");
       setEditStep(0);
       setActionError("");

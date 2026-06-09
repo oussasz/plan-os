@@ -7,7 +7,7 @@ import {
   analyzeProjectIntelligence,
   applyIntelligenceToProject,
 } from "~/server/planning/project-intelligence";
-import { regeneratePlan } from "~/server/planning/service";
+import { getProjectIntelligenceCards, regeneratePlan } from "~/server/planning/service";
 import { getWeekStart } from "~/server/planning/week-utils";
 
 export const projectDraftSchema = z.object({
@@ -47,6 +47,10 @@ export const projectRouter = createTRPCRouter({
       where: { userId: ctx.session.user.id },
       orderBy: { updatedAt: "desc" },
     });
+  }),
+
+  intelligenceCards: protectedProcedure.query(async ({ ctx }) => {
+    return getProjectIntelligenceCards(ctx.db, ctx.session.user.id);
   }),
 
   getById: protectedProcedure

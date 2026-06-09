@@ -19,10 +19,12 @@ type ProjectRow = { id: string; name: string };
 export function CloseOutDialog({
   date,
   projects,
+  plannedByProject,
   disabled,
 }: {
   date: string;
   projects: ProjectRow[];
+  plannedByProject?: Record<string, number>;
   disabled?: boolean;
 }) {
   const utils = api.useUtils();
@@ -30,6 +32,7 @@ export function CloseOutDialog({
     onSuccess: async () => {
       await utils.planning.getToday.invalidate();
       await utils.planning.getWeek.invalidate();
+      await utils.project.intelligenceCards.invalidate();
       setOpen(false);
     },
   });
@@ -63,19 +66,29 @@ export function CloseOutDialog({
             });
           }}
         >
-          {projects.map((p) => (
-            <div key={p.id} className="space-y-1">
-              <Label>{p.name}</Label>
-              <Input
-                type="number"
-                min={0}
-                step={0.5}
-                placeholder="Actual hours"
-                value={hours[p.id] ?? ""}
-                onChange={(e) => setHours((h) => ({ ...h, [p.id]: e.target.value }))}
-              />
-            </div>
-          ))}
+          {projects.map((p) => {
+            const planned = plannedByProject?.[p.id];
+            return (
+              <div key={p.id} className="space-y-1">
+                <Label>
+                  {p.name}
+                  {planned !== undefined && (
+                    <span className="ml-2 font-normal text-slate-500">
+                      (planned {planned}h)
+                    </span>
+                  )}
+                </Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  placeholder="Actual hours"
+                  value={hours[p.id] ?? ""}
+                  onChange={(e) => setHours((h) => ({ ...h, [p.id]: e.target.value }))}
+                />
+              </div>
+            );
+          })}
           <div className="space-y-1">
             <Label>Wasted hours</Label>
             <Input

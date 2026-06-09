@@ -1,4 +1,15 @@
 import type { Prisma, PrismaClient } from "../../../generated/prisma";
+import {
+  applyDynamicReallocation,
+  buildCognitiveDayState,
+  buildProjectIntelligenceCards,
+  enforceAntiDrift,
+  scoreActiveProjects,
+  type CognitiveDayState,
+  type ExecutionSnapshot,
+  type ProjectIntelligenceCard,
+  type ReallocationRecord,
+} from "./cognitive-controller";
 import { packDay } from "./day-packer";
 import { generatePlan } from "./engine";
 import { analyzeExecution, computeLearningUpdates } from "./feedback";
@@ -159,6 +170,220 @@ function blockWorkHours(startTime: string, endTime: string): number {
 
 function isWorkBlock(blockType: string): boolean {
   return blockType !== "break" && blockType !== "lunch" && blockType !== "buffer";
+}
+
+function hoursFromBlocks(
+  blocks: { projectId: string | null; blockType: string; startTime: string; endTime: string }[],
+  filter?: (b: { endMin: number }) => boolean
+): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const b of blocks) {
+    if (!b.projectId || !isWorkBlock(b.blockType)) continue;
+    const endMin = parseTimeToMinutes(b.endTime);
+    if (filter && !filter({ endMin })) continue;
+    map.set(b.projectId, (map.get(b.projectId) ?? 0) + blockWorkHours(b.startTime, b.endTime));
+  }
+  return map;
+}
+
+async function loadWeekExecutionSnapshots(
+  db: PrismaClient,
+  userId: string,
+  weekStart: string
+): Promise<ExecutionSnapshot[]> {
+  const reports = await db.executionReport.findMany({
+    where: {
+      userId,
+      date: { gte: new Date(weekStart) },
+    },
+    include: { actuals: true },
+  });
+
+  const map = new Map<string, ExecutionSnapshot>();
+  for (const report of reports) {
+    for (const a of report.actuals) {
+      const cur = map.get(a.projectId) ?? { projectId: a.projectId, plannedHours: 0, actualHours: 0 };
+      cur.plannedHours += Number(a.plannedHours);
+      cur.actualHours += Number(a.actualHours);
+      map.set(a.projectId, cur);
+    }
+  }
+  return [...map.values()];
+}
+
+async function loadTodayExecutionSnapshots(
+  db: PrismaClient,
+  userId: string,
+  today: string
+): Promise<ExecutionSnapshot[]> {
+  const report = await db.executionReport.findUnique({
+    where: { userId_date: { userId, date: new Date(today) } },
+    include: { actuals: true },
+  });
+  if (!report) return [];
+  return report.actuals.map((a) => ({
+    projectId: a.projectId,
+    plannedHours: Number(a.plannedHours),
+    actualHours: Number(a.actualHours),
+  }));
+}
+
+function availableHoursRemaining(
+  dayCapacityHours: number,
+  workStartTime: string,
+  nowMinutes: number
+): number {
+  const workStart = parseTimeToMinutes(workStartTime);
+  const dayEnd = workStart + dayCapacityHours * 60;
+  if (nowMinutes >= dayEnd) return 0;
+  return Math.max(0, (dayEnd - Math.max(workStart, nowMinutes)) / 60);
+}
+
+async function computeTodayCognitiveState(
+  db: PrismaClient,
+  userId: string,
+  input: {
+    plan: {
+      blocks: {
+        projectId: string | null;
+        blockType: string;
+        startTime: string;
+        endTime: string;
+        project?: { name: string } | null;
+      }[];
+      totalCapacityHours: { toNumber(): number } | number;
+    } | null;
+    today: string;
+    nowMinutes: number;
+    timezone: string;
+    reallocations?: ReallocationRecord[];
+  }
+): Promise<CognitiveDayState | null> {
+  const { capacity, projectInputs, fixedInputs, adHocInputs, learningInputs } =
+    await loadEngineInputs(db, userId);
+
+  const weekStart = getWeekStart(new Date(`${input.today}T12:00:00`));
+  const [weekExecution, todayExecution, weekly] = await Promise.all([
+    loadWeekExecutionSnapshots(db, userId, weekStart),
+    loadTodayExecutionSnapshots(db, userId, input.today),
+    db.weeklyPlan.findUnique({
+      where: { userId_weekStart: { userId, weekStart: new Date(weekStart) } },
+      include: { allocations: true },
+    }),
+  ]);
+
+  const blocks = input.plan?.blocks ?? [];
+  const dayCapacity = Number(input.plan?.totalCapacityHours ?? capacity.dailyCapacityHours);
+
+  const todayPlanned = hoursFromBlocks(blocks);
+  const todayRemaining = hoursFromBlocks(blocks, ({ endMin }) => endMin > input.nowMinutes);
+  const scheduledHoursRemaining = [...todayRemaining.values()].reduce((s, h) => s + h, 0);
+  const availableHoursRemainingHours = availableHoursRemaining(
+    dayCapacity,
+    capacity.workStartTime,
+    input.nowMinutes
+  );
+
+  const weekPlanned = new Map<string, number>();
+  for (const a of weekly?.allocations ?? []) {
+    weekPlanned.set(a.projectId, Number(a.plannedHours));
+  }
+
+  const fixedToday = fixedInputs.filter((e) => e.date === input.today).length;
+  const scored = scoreActiveProjects(
+    projectInputs,
+    learningInputs,
+    fixedInputs,
+    adHocInputs,
+    input.today
+  );
+
+  const active = projectInputs.filter((p) => p.status === "active");
+  const weekRemaining = new Map<string, number>();
+  for (const a of weekly?.allocations ?? []) {
+    weekRemaining.set(a.projectId, Number(a.plannedHours));
+  }
+  const { reallocations } = applyDynamicReallocation({
+    remainingHours: weekRemaining,
+    projects: active,
+    learning: learningInputs,
+    weekExecution,
+    dayCapacityHours: dayCapacity,
+    today: input.today,
+  });
+  const { alerts: driftAlerts } = enforceAntiDrift({
+    remainingHours: todayRemaining,
+    projects: active,
+    dayCapacityHours: dayCapacity,
+    settings: capacity,
+  });
+
+  return buildCognitiveDayState({
+    projects: projectInputs,
+    learning: learningInputs,
+    weekExecution,
+    todayExecution,
+    todayPlanned,
+    todayBlocksPlannedRemaining: todayRemaining,
+    scored,
+    settings: capacity,
+    today: input.today,
+    scheduledHoursRemaining,
+    availableHoursRemaining: availableHoursRemainingHours,
+    fixedEventCount: fixedToday,
+    reallocations: input.reallocations ?? reallocations,
+    driftAlerts,
+  });
+}
+
+export async function getProjectIntelligenceCards(
+  db: PrismaClient,
+  userId: string
+): Promise<ProjectIntelligenceCard[]> {
+  const { capacity, projectInputs, fixedInputs, adHocInputs, learningInputs } =
+    await loadEngineInputs(db, userId);
+
+  const today = getTodayInTimezone(capacity.timezone);
+  const weekStart = getWeekStart(new Date(`${today}T12:00:00`));
+
+  const [weekExecution, todayExecution, weekly, todayPlan] = await Promise.all([
+    loadWeekExecutionSnapshots(db, userId, weekStart),
+    loadTodayExecutionSnapshots(db, userId, today),
+    db.weeklyPlan.findUnique({
+      where: { userId_weekStart: { userId, weekStart: new Date(weekStart) } },
+      include: { allocations: true },
+    }),
+    db.dailyPlan.findUnique({
+      where: { userId_date: { userId, date: new Date(today) } },
+      include: { blocks: true },
+    }),
+  ]);
+
+  const weekPlanned = new Map<string, number>();
+  for (const a of weekly?.allocations ?? []) {
+    weekPlanned.set(a.projectId, Number(a.plannedHours));
+  }
+
+  const todayPlanned = hoursFromBlocks(todayPlan?.blocks ?? []);
+  const scored = scoreActiveProjects(
+    projectInputs,
+    learningInputs,
+    fixedInputs,
+    adHocInputs,
+    today
+  );
+
+  return buildProjectIntelligenceCards({
+    projects: projectInputs,
+    learning: learningInputs,
+    weekExecution,
+    todayExecution,
+    todayPlanned,
+    weekPlanned,
+    scored,
+    settings: capacity,
+    today,
+  });
 }
 
 export async function regeneratePlan(
@@ -323,6 +548,27 @@ async function repackTodayPlan(db: PrismaClient, userId: string) {
   const active = projectInputs.filter((p) => p.status === "active");
   if (active.length === 0) return;
 
+  const dow = getDayOfWeek(today);
+  const dayCapacity = capacity.weekdayHours[String(dow)] ?? capacity.dailyCapacityHours;
+
+  const weekExecution = await loadWeekExecutionSnapshots(db, userId, weekStart);
+  const { adjusted } = applyDynamicReallocation({
+    remainingHours: remainingByProject,
+    projects: active,
+    learning: learningInputs,
+    weekExecution,
+    dayCapacityHours: dayCapacity,
+    today,
+  });
+  const { capped, alerts: driftAlerts } = enforceAntiDrift({
+    remainingHours: adjusted,
+    projects: active,
+    dayCapacityHours: dayCapacity,
+    settings: capacity,
+  });
+  remainingByProject.clear();
+  for (const [id, h] of capped) remainingByProject.set(id, h);
+
   const projectReasons = buildProjectReasons(
     projectInputs,
     learningInputs,
@@ -330,9 +576,12 @@ async function repackTodayPlan(db: PrismaClient, userId: string) {
     adHocInputs,
     today
   );
-
-  const dow = getDayOfWeek(today);
-  const dayCapacity = capacity.weekdayHours[String(dow)] ?? capacity.dailyCapacityHours;
+  for (const alert of driftAlerts) {
+    const reason = projectReasons.get(alert.projectId);
+    if (reason) {
+      projectReasons.set(alert.projectId, `${reason} · Anti-drift cap`);
+    }
+  }
 
   const { blocks } = packDay({
     date: today,
@@ -415,6 +664,12 @@ export async function getTodayPlan(db: PrismaClient, userId: string) {
         },
       },
     });
+    const cognitive = await computeTodayCognitiveState(db, userId, {
+      plan: retry,
+      today,
+      nowMinutes,
+      timezone,
+    });
     return {
       plan: retry,
       today,
@@ -422,8 +677,16 @@ export async function getTodayPlan(db: PrismaClient, userId: string) {
       nowTime: formatMinutesAsTime(nowMinutes),
       nowMinutes,
       timezone,
+      cognitive,
     };
   }
+
+  const cognitive = await computeTodayCognitiveState(db, userId, {
+    plan,
+    today,
+    nowMinutes,
+    timezone,
+  });
 
   return {
     plan,
@@ -432,6 +695,7 @@ export async function getTodayPlan(db: PrismaClient, userId: string) {
     nowTime: formatMinutesAsTime(nowMinutes),
     nowMinutes,
     timezone,
+    cognitive,
   };
 }
 

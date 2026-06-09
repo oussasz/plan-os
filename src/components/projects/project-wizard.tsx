@@ -38,6 +38,7 @@ export function ProjectWizard() {
       await utils.project.list.invalidate();
       await utils.planning.getToday.invalidate();
       await utils.planning.getWeek.invalidate();
+      await utils.project.intelligenceCards.invalidate();
       setOpen(false);
       setStep(0);
       setForm(INITIAL_PROJECT_FORM);
