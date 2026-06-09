@@ -1,18 +1,34 @@
-import { auth } from "~/server/auth";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
-export default auth((req) => {
-  const isLoggedIn = !!req.auth;
-  const isLogin = req.nextUrl.pathname.startsWith("/login");
-  const isApi = req.nextUrl.pathname.startsWith("/api");
+const PUBLIC_PREFIXES = ["/login", "/api/", "/_next/", "/favicon.ico", "/manifest.json"];
 
-  if (!isLoggedIn && !isLogin && !isApi) {
-    return Response.redirect(new URL("/login", req.nextUrl));
+function hasSessionCookie(request: NextRequest): boolean {
+  return (
+    request.cookies.has("authjs.session-token") ||
+    request.cookies.has("__Secure-authjs.session-token") ||
+    request.cookies.has("next-auth.session-token") ||
+    request.cookies.has("__Secure-next-auth.session-token")
+  );
+}
+
+export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  if (PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) {
+    if (pathname.startsWith("/login") && hasSessionCookie(request)) {
+      return NextResponse.redirect(new URL("/today", request.url));
+    }
+    return NextResponse.next();
   }
-  if (isLoggedIn && isLogin) {
-    return Response.redirect(new URL("/today", req.nextUrl));
+
+  if (!hasSessionCookie(request)) {
+    return NextResponse.redirect(new URL("/login", request.url));
   }
-});
+
+  return NextResponse.next();
+}
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.json).*)"],
+  matcher: ["/((?!_next/static|_next/image).*)"],
 };
