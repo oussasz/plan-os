@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
@@ -15,7 +16,7 @@ export const adHocRouter = createTRPCRouter({
     .input(
       z.object({
         title: z.string().min(1),
-        urgencyBoost: z.number().min(0).max(1).default(0.5),
+        urgencyBoost: z.number().min(0).max(1),
         expiresAt: z.string().optional(),
         projectId: z.string().optional(),
       })
@@ -35,11 +36,18 @@ export const adHocRouter = createTRPCRouter({
     }),
 
   delete: protectedProcedure
-    .input(z.object({ id: z.string() }))
+    .input(z.object({ id: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db.adHocItem.delete({
+      const existing = await ctx.db.adHocItem.findFirst({
         where: { id: input.id, userId: ctx.session.user.id },
+        select: { id: true },
       });
+
+      if (!existing) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Ad-hoc item not found" });
+      }
+
+      await ctx.db.adHocItem.delete({ where: { id: input.id } });
       await regeneratePlan(ctx.db, ctx.session.user.id);
       return { ok: true };
     }),

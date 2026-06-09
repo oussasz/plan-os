@@ -10,8 +10,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "~/components/ui/dialog";
-import { INITIAL_PROJECT_FORM, toDraftInput } from "~/lib/project-form";
-import type { ProjectDraftForm } from "~/lib/project-form";
+import {
+  INITIAL_PROJECT_FORM,
+  toDraftInput,
+  type ProjectDraftForm,
+} from "~/lib/project-form";
 import { api } from "~/trpc/react";
 import { ProjectIntelligencePreview } from "./project-intelligence-preview";
 import { ProjectWizardStepBasic } from "./project-wizard-step-basic";
@@ -22,6 +25,7 @@ export function ProjectWizard() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<ProjectDraftForm>(INITIAL_PROJECT_FORM);
+  const [error, setError] = useState("");
 
   const draftInput = useMemo(() => toDraftInput(form), [form]);
 
@@ -37,13 +41,16 @@ export function ProjectWizard() {
       setOpen(false);
       setStep(0);
       setForm(INITIAL_PROJECT_FORM);
+      setError("");
     },
+    onError: (err) => setError(err.message),
   });
 
   useEffect(() => {
     if (!open) {
       setStep(0);
       setForm(INITIAL_PROJECT_FORM);
+      setError("");
     }
   }, [open]);
 
@@ -66,7 +73,7 @@ export function ProjectWizard() {
           ))}
         </div>
 
-        {step === 0 && <ProjectWizardStepBasic form={form} setForm={setForm} />}
+        {step === 0 && <ProjectWizardStepBasic form={form} setForm={setForm} showNotes />}
         {step === 1 && (
           <ProjectWizardStepIntelligence
             form={form}
@@ -75,6 +82,8 @@ export function ProjectWizard() {
           />
         )}
         {step === 2 && <ProjectIntelligencePreview preview={preview} />}
+
+        {error && <p className="text-sm text-red-600">{error}</p>}
 
         <div className="mt-4 flex gap-2">
           {step > 0 && (

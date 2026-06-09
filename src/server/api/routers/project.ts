@@ -1,13 +1,16 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
+import { dbProjectToDraft } from "~/server/api/routers/project-mappers";
 import {
   analyzeProjectIntelligence,
   applyIntelligenceToProject,
 } from "~/server/planning/project-intelligence";
 import { regeneratePlan } from "~/server/planning/service";
+import { getWeekStart } from "~/server/planning/week-utils";
 
-const projectDraftSchema = z.object({
+export const projectDraftSchema = z.object({
   name: z.string().min(1),
   projectType: z.enum(["client", "personal", "maintenance", "learning", "emergency"]).default("personal"),
   effortSize: z.enum(["small", "medium", "large"]).default("medium"),
@@ -22,6 +25,22 @@ const projectDraftSchema = z.object({
   notes: z.string().default(""),
 });
 
+function draftFromInput(input: z.infer<typeof projectDraftSchema>) {
+  return {
+    name: input.name,
+    projectType: input.projectType,
+    effortSize: input.effortSize,
+    importanceLevel: input.importanceLevel,
+    urgencyLevel: input.urgencyLevel,
+    urgencyOverride: input.urgencyOverride,
+    focusDemand: input.focusDemand,
+    overImmersionRisk: input.overImmersionRisk,
+    flexibility: input.flexibility,
+    deadline: input.deadline ?? null,
+    estimatedHoursRemaining: input.estimatedHoursRemaining ?? null,
+  };
+}
+
 export const projectRouter = createTRPCRouter({
   list: protectedProcedure.query(async ({ ctx }) => {
     return ctx.db.project.findMany({
@@ -30,67 +49,53 @@ export const projectRouter = createTRPCRouter({
     });
   }),
 
-  get: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
-    const project = await ctx.db.project.findUnique({
-      where: { id: input.id, userId: ctx.session.user.id },
-      include: {
-        fixedEvents: { orderBy: [{ date: "asc" }, { startTime: "asc" }] },
-        adHocItems: { orderBy: { createdAt: "desc" } },
-        planningLearning: true,
-      },
-    });
-    if (!project) return null;
+  getById: protectedProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.project.findFirst({
+        where: { id: input.id, userId: ctx.session.user.id },
+        include: {
+          fixedEvents: { orderBy: [{ date: "asc" }, { startTime: "asc" }] },
+          adHocItems: { orderBy: { createdAt: "desc" } },
+          planningLearning: true,
+        },
+      });
 
-    const draft = {
-      name: project.name,
-      projectType: project.projectType as z.infer<typeof projectDraftSchema>["projectType"],
-      effortSize: project.effortSize as z.infer<typeof projectDraftSchema>["effortSize"],
-      importanceLevel: project.importanceLevel,
-      urgencyLevel: project.urgencyLevel as z.infer<typeof projectDraftSchema>["urgencyLevel"],
-      urgencyOverride: project.urgencyOverride,
-      focusDemand: project.focusDemand as z.infer<typeof projectDraftSchema>["focusDemand"],
-      overImmersionRisk: project.overImmersionRisk as z.infer<typeof projectDraftSchema>["overImmersionRisk"],
-      flexibility: project.flexibility as z.infer<typeof projectDraftSchema>["flexibility"],
-      deadline: project.deadline ? project.deadline.toISOString().split("T")[0]! : null,
-      estimatedHoursRemaining: project.estimatedHoursRemaining
-        ? Number(project.estimatedHoursRemaining)
-        : null,
-    };
-    const intelligence = analyzeProjectIntelligence(draft);
+      if (!project) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+      }
 
-    return { project, intelligence };
-  }),
+      const weekStart = new Date(getWeekStart());
+      const weeklyAllocation = await ctx.db.weeklyAllocation.findFirst({
+        where: {
+          projectId: project.id,
+          weeklyPlan: { userId: ctx.session.user.id, weekStart },
+        },
+        select: { plannedHours: true, priorityScore: true, driftPenalty: true },
+      });
+
+      const draft = dbProjectToDraft(project);
+      const intelligence = analyzeProjectIntelligence(draft);
+
+      return {
+        project,
+        intelligence,
+        weeklyAllocation: weeklyAllocation
+          ? {
+              plannedHours: Number(weeklyAllocation.plannedHours),
+              priorityScore: Number(weeklyAllocation.priorityScore),
+              driftPenalty: Number(weeklyAllocation.driftPenalty),
+            }
+          : null,
+      };
+    }),
 
   previewIntelligence: protectedProcedure.input(projectDraftSchema).query(async ({ input }) => {
-    return analyzeProjectIntelligence({
-      name: input.name,
-      projectType: input.projectType,
-      effortSize: input.effortSize,
-      importanceLevel: input.importanceLevel,
-      urgencyLevel: input.urgencyLevel,
-      urgencyOverride: input.urgencyOverride,
-      focusDemand: input.focusDemand,
-      overImmersionRisk: input.overImmersionRisk,
-      flexibility: input.flexibility,
-      deadline: input.deadline ?? null,
-      estimatedHoursRemaining: input.estimatedHoursRemaining ?? null,
-    });
+    return analyzeProjectIntelligence(draftFromInput(input));
   }),
 
   create: protectedProcedure.input(projectDraftSchema).mutation(async ({ ctx, input }) => {
-    const draft = {
-      name: input.name,
-      projectType: input.projectType,
-      effortSize: input.effortSize,
-      importanceLevel: input.importanceLevel,
-      urgencyLevel: input.urgencyLevel,
-      urgencyOverride: input.urgencyOverride,
-      focusDemand: input.focusDemand,
-      overImmersionRisk: input.overImmersionRisk,
-      flexibility: input.flexibility,
-      deadline: input.deadline ?? null,
-      estimatedHoursRemaining: input.estimatedHoursRemaining ?? null,
-    };
+    const draft = draftFromInput(input);
     const intelligence = analyzeProjectIntelligence(draft);
     const derived = applyIntelligenceToProject(draft, intelligence);
 
@@ -109,26 +114,45 @@ export const projectRouter = createTRPCRouter({
 
   update: protectedProcedure
     .input(
-      z.object({
-        id: z.string(),
-        status: z.enum(["active", "paused", "done"]).optional(),
-      }).merge(projectDraftSchema.partial())
+      z
+        .object({
+          id: z.string().min(1),
+          status: z.enum(["active", "paused", "done"]).optional(),
+        })
+        .merge(projectDraftSchema.partial())
     )
     .mutation(async ({ ctx, input }) => {
       const { id, deadline, status, ...rest } = input;
-      const existing = await ctx.db.project.findUnique({ where: { id, userId: ctx.session.user.id } });
-      if (!existing) throw new Error("Project not found");
+      const existing = await ctx.db.project.findFirst({
+        where: { id, userId: ctx.session.user.id },
+      });
+
+      if (!existing) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+      }
 
       const draft = {
         name: rest.name ?? existing.name,
-        projectType: (rest.projectType ?? existing.projectType) as z.infer<typeof projectDraftSchema>["projectType"],
-        effortSize: (rest.effortSize ?? existing.effortSize) as z.infer<typeof projectDraftSchema>["effortSize"],
+        projectType: (rest.projectType ?? existing.projectType) as z.infer<
+          typeof projectDraftSchema
+        >["projectType"],
+        effortSize: (rest.effortSize ?? existing.effortSize) as z.infer<
+          typeof projectDraftSchema
+        >["effortSize"],
         importanceLevel: rest.importanceLevel ?? existing.importanceLevel,
-        urgencyLevel: (rest.urgencyLevel ?? existing.urgencyLevel) as z.infer<typeof projectDraftSchema>["urgencyLevel"],
+        urgencyLevel: (rest.urgencyLevel ?? existing.urgencyLevel) as z.infer<
+          typeof projectDraftSchema
+        >["urgencyLevel"],
         urgencyOverride: rest.urgencyOverride ?? existing.urgencyOverride,
-        focusDemand: (rest.focusDemand ?? existing.focusDemand) as z.infer<typeof projectDraftSchema>["focusDemand"],
-        overImmersionRisk: (rest.overImmersionRisk ?? existing.overImmersionRisk) as z.infer<typeof projectDraftSchema>["overImmersionRisk"],
-        flexibility: (rest.flexibility ?? existing.flexibility) as z.infer<typeof projectDraftSchema>["flexibility"],
+        focusDemand: (rest.focusDemand ?? existing.focusDemand) as z.infer<
+          typeof projectDraftSchema
+        >["focusDemand"],
+        overImmersionRisk: (rest.overImmersionRisk ?? existing.overImmersionRisk) as z.infer<
+          typeof projectDraftSchema
+        >["overImmersionRisk"],
+        flexibility: (rest.flexibility ?? existing.flexibility) as z.infer<
+          typeof projectDraftSchema
+        >["flexibility"],
         deadline:
           deadline !== undefined
             ? deadline
@@ -147,7 +171,7 @@ export const projectRouter = createTRPCRouter({
       const derived = applyIntelligenceToProject(draft, intelligence);
 
       const project = await ctx.db.project.update({
-        where: { id, userId: ctx.session.user.id },
+        where: { id },
         data: {
           ...(rest.name !== undefined ? { name: rest.name } : {}),
           ...(rest.notes !== undefined ? { notes: rest.notes } : {}),
@@ -157,15 +181,22 @@ export const projectRouter = createTRPCRouter({
         },
       });
       await regeneratePlan(ctx.db, ctx.session.user.id);
-      return project;
+      return { project, intelligence };
     }),
 
   delete: protectedProcedure
-    .input(z.object({ id: z.string() }))
+    .input(z.object({ id: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db.project.delete({
+      const existing = await ctx.db.project.findFirst({
         where: { id: input.id, userId: ctx.session.user.id },
+        select: { id: true },
       });
+
+      if (!existing) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+      }
+
+      await ctx.db.project.delete({ where: { id: input.id } });
       await regeneratePlan(ctx.db, ctx.session.user.id);
       return { ok: true };
     }),

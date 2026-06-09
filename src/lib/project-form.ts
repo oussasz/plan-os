@@ -1,5 +1,7 @@
 import type { RouterOutputs } from "~/trpc/react";
 
+export type ProjectRecord = RouterOutputs["project"]["list"][number];
+
 export type ProjectDraftForm = {
   name: string;
   projectType: "client" | "personal" | "maintenance" | "learning" | "emergency";
@@ -32,8 +34,6 @@ export const INITIAL_PROJECT_FORM: ProjectDraftForm = {
   status: "active",
 };
 
-type ProjectRow = RouterOutputs["project"]["list"][number];
-
 export function toDraftInput(form: ProjectDraftForm) {
   return {
     name: form.name,
@@ -48,11 +48,10 @@ export function toDraftInput(form: ProjectDraftForm) {
     deadline: form.deadline || null,
     estimatedHoursRemaining: form.hours ? Number(form.hours) : null,
     notes: form.notes,
-    status: form.status,
   };
 }
 
-export function projectToForm(project: ProjectRow): ProjectDraftForm {
+export function projectToForm(project: ProjectRecord): ProjectDraftForm {
   return {
     name: project.name,
     projectType: project.projectType as ProjectDraftForm["projectType"],
@@ -69,3 +68,11 @@ export function projectToForm(project: ProjectRow): ProjectDraftForm {
     status: project.status as ProjectDraftForm["status"],
   };
 }
+
+export const PROJECT_TYPE_LABELS: Record<string, string> = {
+  client: "Client Work",
+  personal: "Personal",
+  maintenance: "Maintenance",
+  learning: "Learning",
+  emergency: "Emergency",
+};

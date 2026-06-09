@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
@@ -16,7 +17,7 @@ export const fixedEventRouter = createTRPCRouter({
     .input(
       z.object({
         title: z.string().min(1),
-        eventType: z.enum(["meeting", "appointment", "obligation"]).default("meeting"),
+        eventType: z.enum(["meeting", "appointment", "obligation"]),
         date: z.string(),
         startTime: z.string(),
         endTime: z.string(),
@@ -42,11 +43,18 @@ export const fixedEventRouter = createTRPCRouter({
     }),
 
   delete: protectedProcedure
-    .input(z.object({ id: z.string() }))
+    .input(z.object({ id: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db.fixedEvent.delete({
+      const existing = await ctx.db.fixedEvent.findFirst({
         where: { id: input.id, userId: ctx.session.user.id },
+        select: { id: true },
       });
+
+      if (!existing) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Fixed event not found" });
+      }
+
+      await ctx.db.fixedEvent.delete({ where: { id: input.id } });
       await regeneratePlan(ctx.db, ctx.session.user.id);
       return { ok: true };
     }),
