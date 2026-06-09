@@ -75,9 +75,37 @@ export interface ProjectInput {
   preferredTimeOfDay: PreferredTimeOfDay;
 }
 
+export interface SignalLayerBreakdown {
+  external: {
+    score: number;
+    timePressure: number;
+    importanceNorm: number;
+    hoursPerDayRequired: number;
+    daysLeft: number | null;
+    effectiveUrgency: UrgencyLevel;
+    fitsWithoutCramming: boolean;
+  };
+  nature: {
+    score: number;
+    sustainableDailyCap: number;
+    natureDampener: number;
+    needsDailyWork: boolean;
+    schedulingMode: SchedulingMode;
+  };
+  behavioral: {
+    score: number;
+    multiplier: number;
+    behavioralCap: number;
+    overfocusStreak: number;
+    neglectDays: number;
+  };
+}
+
 export interface ProjectIntelligenceResult {
   priorityBand: PriorityBand;
+  /** Alias for priorityScore — kept for backward compatibility */
   compositeScore: number;
+  priorityScore: number;
   suggestedDailyHours: number;
   suggestedSessions: number;
   preferredTimeOfDay: PreferredTimeOfDay;
@@ -87,6 +115,8 @@ export interface ProjectIntelligenceResult {
   requiresDeepFocus: boolean;
   autoUrgencyLevel: UrgencyLevel;
   warnings: string[];
+  layers: SignalLayerBreakdown;
+  /** @deprecated Use layers — kept for backward compatibility */
   scoreBreakdown: {
     importance: number;
     urgency: number;

@@ -25,13 +25,28 @@ export function derivePreferredTimeOfDay(
   return "flexible";
 }
 
-export function computeSuggestedDailyHours(
-  compositeScore: number,
-  maxDailyCap: number,
-  settings: CapacityConfig
-): number {
-  const base = settings.dailyCapacityHours * (compositeScore / 100);
-  return Math.round(Math.min(maxDailyCap, Math.max(0.5, base)) * 10) / 10;
+export function computeSuggestedDailyHours(input: {
+  hoursPerDayRequired: number;
+  sustainableDailyCap: number;
+  maxDailyCap: number;
+  natureDampener: number;
+  behavioralMultiplier: number;
+  needsDailyWork: boolean;
+  settings: CapacityConfig;
+}): number {
+  const paceBased =
+    input.hoursPerDayRequired > 0
+      ? input.hoursPerDayRequired
+      : input.sustainableDailyCap * 0.5;
+
+  let suggested = Math.min(paceBased, input.maxDailyCap) * input.natureDampener;
+  suggested *= input.behavioralMultiplier;
+
+  if (!input.needsDailyWork) {
+    suggested = Math.min(suggested, input.sustainableDailyCap * 0.75);
+  }
+
+  return Math.round(Math.max(0.5, suggested) * 10) / 10;
 }
 
 export function computeSuggestedSessions(

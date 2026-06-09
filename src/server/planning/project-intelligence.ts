@@ -1,71 +1,22 @@
 import { buildAntiDrowningWarnings, computeMaxDailyCap } from "./anti-drowning";
 import {
-  computeSuggestedDailyHours,
+  computeAutoUrgencyFromDeadline,
+  deriveIntelligenceFromLayers,
+  resolveEstimatedHours,
+} from "./signal-layers";
+import {
   computeSuggestedSessions,
   derivePreferredTimeOfDay,
-  deriveSchedulingMode,
   requiresDeepFocus,
 } from "./time-strategy";
 import type {
   CapacityConfig,
+  LearningState,
   PriorityBand,
   ProjectDraft,
   ProjectIntelligenceResult,
-  UrgencyLevel,
 } from "./types";
-import { DEFAULT_CAPACITY, EFFORT_HOURS } from "./types";
-import { daysBetween, getToday } from "./week-utils";
-
-function levelToNorm(level: UrgencyLevel): number {
-  const map: Record<UrgencyLevel, number> = {
-    low: 0.25,
-    medium: 0.5,
-    high: 0.75,
-    critical: 1,
-  };
-  return map[level];
-}
-
-function focusToNorm(demand: ProjectDraft["focusDemand"]): number {
-  const map = { low: 0.3, medium: 0.6, high: 1 };
-  return map[demand];
-}
-
-export function computeAutoUrgency(
-  draft: Pick<ProjectDraft, "deadline" | "projectType">,
-  refDate = getToday()
-): UrgencyLevel {
-  if (draft.projectType === "emergency") return "critical";
-  if (!draft.deadline) return draft.projectType === "client" ? "medium" : "low";
-
-  const daysLeft = daysBetween(refDate, draft.deadline);
-  if (daysLeft < 0) return "critical";
-  if (daysLeft <= 3) return "critical";
-  if (daysLeft <= 7) return "high";
-  if (daysLeft <= 14) return "medium";
-  return "low";
-}
-
-function computeDeadlinePressure(deadline: string | null, refDate: string): number {
-  if (!deadline) return 0.1;
-  const daysLeft = daysBetween(refDate, deadline);
-  if (daysLeft < 0) return 1;
-  if (daysLeft <= 3) return 0.95;
-  if (daysLeft <= 7) return 0.85;
-  if (daysLeft <= 14) return 0.65;
-  if (daysLeft <= 30) return 0.4;
-  return 0.15;
-}
-
-function computeRiskAdjustment(
-  focusDemand: ProjectDraft["focusDemand"],
-  overImmersionRisk: ProjectDraft["overImmersionRisk"]
-): number {
-  if (focusDemand === "high" && overImmersionRisk === "high") return -8;
-  if (overImmersionRisk === "high") return -5;
-  if (overImmersionRisk === "medium") return -2;
-  return 0;
-}
+import { DEFAULT_CAPACITY } from "./types";
 
 function toPriorityBand(score: number): PriorityBand {
   if (score >= 65) return "high";
@@ -73,68 +24,49 @@ function toPriorityBand(score: number): PriorityBand {
   return "low";
 }
 
-export function resolveEstimatedHours(draft: ProjectDraft): number {
-  if (draft.estimatedHoursRemaining != null && draft.estimatedHoursRemaining > 0) {
-    return draft.estimatedHoursRemaining;
-  }
-  return EFFORT_HOURS[draft.effortSize];
-}
+export { computeAutoUrgencyFromDeadline as computeAutoUrgency };
+export { resolveEstimatedHours };
 
 export function analyzeProjectIntelligence(
   draft: ProjectDraft,
   settings: CapacityConfig = DEFAULT_CAPACITY,
-  refDate = getToday()
+  refDate?: string,
+  learning?: LearningState
 ): ProjectIntelligenceResult {
-  const autoUrgencyLevel = computeAutoUrgency(draft, refDate);
-  const effectiveUrgency = draft.urgencyOverride ? draft.urgencyLevel : autoUrgencyLevel;
+  const today = refDate ?? new Date().toISOString().split("T")[0]!;
+  const layers = deriveIntelligenceFromLayers(draft, settings, today, learning);
 
-  const importanceNorm = draft.importanceLevel / 5;
-  const urgencyNorm = levelToNorm(effectiveUrgency);
-  const deadlinePressure = computeDeadlinePressure(draft.deadline, refDate);
-  const focusNorm = focusToNorm(draft.focusDemand);
-  const flexibilityPenalty = draft.flexibility === "flexible" ? 5 : 0;
-  const riskAdjustment = computeRiskAdjustment(draft.focusDemand, draft.overImmersionRisk);
-
-  const compositeScore = Math.round(
-    Math.min(
-      100,
-      Math.max(
-        0,
-        importanceNorm * 30 +
-          urgencyNorm * 25 +
-          deadlinePressure * 20 +
-          focusNorm * 10 -
-          flexibilityPenalty +
-          riskAdjustment
-      )
-    )
-  );
-
-  const maxDailyCap = computeMaxDailyCap(draft, settings);
-  const schedulingMode = deriveSchedulingMode(draft.effortSize, draft.flexibility);
+  const maxDailyCap = computeMaxDailyCap(draft, settings, layers);
+  const suggestedDailyHours = Math.min(layers.suggestedDailyHours, maxDailyCap);
+  const schedulingMode = layers.nature.schedulingMode;
   const preferredTimeOfDay = derivePreferredTimeOfDay(draft.focusDemand, draft.projectType);
-  const suggestedDailyHours = computeSuggestedDailyHours(compositeScore, maxDailyCap, settings);
   const suggestedSessions = computeSuggestedSessions(suggestedDailyHours, settings.blockMinutes);
   const estimatedHours = resolveEstimatedHours(draft);
-  const warnings = buildAntiDrowningWarnings(draft, maxDailyCap);
+  const warnings = buildAntiDrowningWarnings(draft, maxDailyCap, layers);
 
   const reasons: string[] = [];
-  if (effectiveUrgency === "critical" || deadlinePressure >= 0.85) {
-    reasons.push("Urgent deadline");
+  if (layers.external.effectiveUrgency === "critical" && layers.nature.needsDailyWork) {
+    reasons.push("Urgent deadline — daily pace required");
+  } else if (layers.external.effectiveUrgency === "critical" && !layers.nature.needsDailyWork) {
+    reasons.push("Urgent but batchable — spread across days");
   } else if (draft.importanceLevel >= 4) {
     reasons.push("High real value");
-  } else if (draft.flexibility === "flexible") {
-    reasons.push("Can be postponed");
+  } else if (!layers.nature.needsDailyWork) {
+    reasons.push("Batch scheduling — no daily pressure needed");
   } else {
     reasons.push("Balanced focus");
   }
 
   if (draft.focusDemand === "low") reasons.push("Low focus slot");
   if (draft.projectType === "maintenance") reasons.push("Maintenance window");
+  if (layers.fitsWithoutCramming) reasons.push("Deadline fits without cramming");
+
+  const priorityScore = layers.priorityScore;
 
   return {
-    priorityBand: toPriorityBand(compositeScore),
-    compositeScore,
+    priorityBand: toPriorityBand(priorityScore),
+    compositeScore: priorityScore,
+    priorityScore,
     suggestedDailyHours,
     suggestedSessions,
     preferredTimeOfDay,
@@ -142,15 +74,40 @@ export function analyzeProjectIntelligence(
     schedulingMode,
     estimatedHours,
     requiresDeepFocus: requiresDeepFocus(draft.focusDemand),
-    autoUrgencyLevel,
+    autoUrgencyLevel: layers.external.autoUrgencyLevel,
     warnings,
+    layers: {
+      external: {
+        score: layers.external.score,
+        timePressure: layers.external.timePressure,
+        importanceNorm: layers.external.importanceNorm,
+        hoursPerDayRequired: layers.external.hoursPerDayRequired,
+        daysLeft: layers.external.daysLeft,
+        effectiveUrgency: layers.external.effectiveUrgency,
+        fitsWithoutCramming: layers.fitsWithoutCramming,
+      },
+      nature: {
+        score: layers.nature.score,
+        sustainableDailyCap: layers.nature.sustainableDailyCap,
+        natureDampener: layers.nature.natureDampener,
+        needsDailyWork: layers.nature.needsDailyWork,
+        schedulingMode: layers.nature.schedulingMode,
+      },
+      behavioral: {
+        score: layers.behavioral.score,
+        multiplier: layers.behavioral.multiplier,
+        behavioralCap: layers.behavioral.behavioralCap,
+        overfocusStreak: layers.behavioral.overfocusStreak,
+        neglectDays: layers.behavioral.neglectDays,
+      },
+    },
     scoreBreakdown: {
-      importance: Math.round(importanceNorm * 30),
-      urgency: Math.round(urgencyNorm * 25),
-      deadlinePressure: Math.round(deadlinePressure * 20),
-      focusDemand: Math.round(focusNorm * 10),
-      flexibilityPenalty,
-      riskAdjustment,
+      importance: Math.round(layers.external.importanceNorm * 30),
+      urgency: Math.round(layers.external.timePressure * 25),
+      deadlinePressure: Math.round(layers.external.timePressure * 20),
+      focusDemand: Math.round(layers.nature.score * 0.1),
+      flexibilityPenalty: draft.flexibility === "flexible" ? 5 : 0,
+      riskAdjustment: Math.round((layers.behavioral.multiplier - 1) * 20),
     },
     reasons,
   };

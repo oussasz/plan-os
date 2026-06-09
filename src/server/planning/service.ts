@@ -157,10 +157,11 @@ function buildProjectReasons(
   learningInputs: LearningState[],
   fixedInputs: FixedEventInput[],
   adHocInputs: AdHocInput[],
-  refDate: string
+  refDate: string,
+  settings: CapacityConfig
 ) {
   const active = projectInputs.filter((p) => p.status === "active");
-  const scored = scoreProjects(active, learningInputs, fixedInputs, adHocInputs, refDate);
+  const scored = scoreProjects(active, learningInputs, fixedInputs, adHocInputs, refDate, settings);
   return new Map(
     scored.map((s) => {
       if (s.urgency >= 0.7) return [s.project.id, "Urgent deadline"];
@@ -305,7 +306,8 @@ async function computeTodayCognitiveState(
     learningInputs,
     fixedInputs,
     adHocInputs,
-    input.today
+    input.today,
+    capacity
   );
 
   const active = projectInputs.filter((p) => p.status === "active");
@@ -380,7 +382,8 @@ export async function getProjectIntelligenceCards(
     learningInputs,
     fixedInputs,
     adHocInputs,
-    today
+    today,
+    capacity
   );
 
   return buildProjectIntelligenceCards({
@@ -588,7 +591,8 @@ async function repackTodayPlan(
     learningInputs,
     fixedInputs,
     adHocInputs,
-    today
+    today,
+    capacity
   );
   for (const alert of driftAlerts) {
     const reason = projectReasons.get(alert.projectId);

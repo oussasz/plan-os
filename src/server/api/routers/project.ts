@@ -7,6 +7,8 @@ import {
   analyzeProjectIntelligence,
   applyIntelligenceToProject,
 } from "~/server/planning/project-intelligence";
+import type { LearningState } from "~/server/planning/types";
+import { DEFAULT_CAPACITY } from "~/server/planning/types";
 import { getProjectIntelligenceCards, regeneratePlan } from "~/server/planning/service";
 import { getWeekStart } from "~/server/planning/week-utils";
 
@@ -79,7 +81,24 @@ export const projectRouter = createTRPCRouter({
       });
 
       const draft = dbProjectToDraft(project);
-      const intelligence = analyzeProjectIntelligence(draft);
+      const learning: LearningState | undefined = project.planningLearning
+        ? {
+            projectId: project.id,
+            overfocusStreak: project.planningLearning.overfocusStreak,
+            neglectDays: project.planningLearning.neglectDays,
+            driftPenaltyMultiplier: Number(project.planningLearning.driftPenaltyMultiplier),
+            avgActualShare: Number(project.planningLearning.avgActualShare),
+            lastTouchedAt: project.planningLearning.lastTouchedAt
+              ? project.planningLearning.lastTouchedAt.toISOString().split("T")[0]!
+              : null,
+          }
+        : undefined;
+      const intelligence = analyzeProjectIntelligence(
+        draft,
+        DEFAULT_CAPACITY,
+        undefined,
+        learning
+      );
 
       return {
         project,

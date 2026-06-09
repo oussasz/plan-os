@@ -50,7 +50,7 @@ export function generatePlan(context: EngineContext): EngineResult | null {
     0
   );
 
-  const scored = scoreProjects(active, learning, fixedEvents, adHoc, refDate);
+  const scored = scoreProjects(active, learning, fixedEvents, adHoc, refDate, settings);
   const weeklyAllocations = distributeWeeklyHours(scored, totalCapacity, settings);
 
   const monthWeeks = 4;

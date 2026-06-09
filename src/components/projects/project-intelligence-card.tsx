@@ -38,6 +38,7 @@ export function ProjectIntelligenceCard({
           <p className="mt-1 text-sm text-slate-500">
             Priority {card.priorityScore} · {card.priorityBand} · {card.suggestedHoursToday}h/day
             suggested
+            {!card.needsDailyWork && " · batch"}
           </p>
         </div>
         <div className="flex items-center gap-1 text-xs text-slate-500">
@@ -70,6 +71,9 @@ export function ProjectIntelligenceCard({
           Burnout {card.burnoutRisk}
         </Badge>
         <Badge variant="secondary">{card.suggestedHoursWeek}h/wk auto</Badge>
+        <Badge variant="secondary" className="capitalize">
+          {card.needsDailyWork ? "Daily" : "Batch"} · {card.schedulingMode}
+        </Badge>
       </div>
 
       {card.suggestions.length > 0 && (

@@ -7,6 +7,7 @@ import type {
   ProjectInput,
   ScoredProject,
 } from "./types";
+import { DEFAULT_CAPACITY } from "./types";
 import { daysBetween } from "./week-utils";
 
 export type FocusLoadLevel = "normal" | "heavy" | "overloaded";
@@ -66,6 +67,9 @@ export interface ProjectIntelligenceCard {
   actualHoursToday: number;
   plannedHoursWeek: number;
   actualHoursWeek: number;
+  needsDailyWork: boolean;
+  hoursPerDayRequired: number;
+  schedulingMode: string;
   suggestions: string[];
 }
 
@@ -305,25 +309,40 @@ export function buildSmartSuggestions(input: {
   }
 
   for (const project of projects.filter((p) => p.status === "active")) {
-    const intel = analyzeProjectIntelligence({
-      name: project.name,
-      projectType: project.projectType,
-      effortSize: project.effortSize,
-      importanceLevel: project.importanceLevel,
-      urgencyLevel: project.urgencyLevel,
-      urgencyOverride: project.urgencyOverride,
-      focusDemand: project.focusDemand,
-      overImmersionRisk: project.overImmersionRisk,
-      flexibility: project.flexibility,
-      deadline: project.deadline,
-      estimatedHoursRemaining: project.estimatedHoursRemaining,
-    });
+    const state = learningMap.get(project.id);
+    const intel = analyzeProjectIntelligence(
+      {
+        name: project.name,
+        projectType: project.projectType,
+        effortSize: project.effortSize,
+        importanceLevel: project.importanceLevel,
+        urgencyLevel: project.urgencyLevel,
+        urgencyOverride: project.urgencyOverride,
+        focusDemand: project.focusDemand,
+        overImmersionRisk: project.overImmersionRisk,
+        flexibility: project.flexibility,
+        deadline: project.deadline,
+        estimatedHoursRemaining: project.estimatedHoursRemaining,
+      },
+      DEFAULT_CAPACITY,
+      today,
+      state
+    );
+
+    if (!intel.layers.nature.needsDailyWork && project.deadline) {
+      suggestions.push({
+        id: `batch-${project.id}`,
+        severity: "info",
+        projectId: project.id,
+        message: `${project.name} does not need daily work — batch scheduling recommended (${intel.layers.external.hoursPerDayRequired}h/day pace).`,
+      });
+    }
 
     if (project.deadline) {
       const daysLeft = daysBetween(today, project.deadline);
       const hoursLeft = project.estimatedHoursRemaining ?? intel.estimatedHours;
-      const hoursPerDayNeeded = daysLeft > 0 ? hoursLeft / daysLeft : hoursLeft;
-      if (daysLeft > 0 && hoursPerDayNeeded > intel.suggestedDailyHours * 1.5) {
+      const hoursPerDayNeeded = intel.layers.external.hoursPerDayRequired;
+      if (daysLeft > 0 && intel.layers.nature.needsDailyWork && hoursPerDayNeeded > intel.suggestedDailyHours * 1.5) {
         suggestions.push({
           id: `risk-${project.id}`,
           severity: "warning",
@@ -331,7 +350,7 @@ export function buildSmartSuggestions(input: {
           message: `${project.name} is risky — needs ${round1(hoursPerDayNeeded)}h/day but only ${intel.suggestedDailyHours}h suggested. Will take longer than expected.`,
         });
       }
-      if (daysLeft > 0 && hoursLeft / intel.suggestedDailyHours > daysLeft * 1.2) {
+      if (daysLeft > 0 && intel.layers.nature.needsDailyWork && hoursLeft / intel.suggestedDailyHours > daysLeft * 1.2) {
         suggestions.push({
           id: `split-${project.id}`,
           severity: "warning",
@@ -341,7 +360,6 @@ export function buildSmartSuggestions(input: {
       }
     }
 
-    const state = learningMap.get(project.id);
     const exec = execMap.get(project.id);
     const score = scoreMap.get(project.id);
 
@@ -443,6 +461,7 @@ export function buildProjectIntelligenceCards(input: {
   return projects
     .filter((p) => p.status === "active")
     .map((project) => {
+      const state = learningMap.get(project.id);
       const draft = {
         name: project.name,
         projectType: project.projectType,
@@ -456,8 +475,7 @@ export function buildProjectIntelligenceCards(input: {
         deadline: project.deadline,
         estimatedHoursRemaining: project.estimatedHoursRemaining,
       };
-      const intel = analyzeProjectIntelligence(draft, settings, today);
-      const state = learningMap.get(project.id);
+      const intel = analyzeProjectIntelligence(draft, settings, today, state);
       const score = scoreMap.get(project.id);
       const weekExec = weekExecMap.get(project.id);
       const todayExec = todayExecMap.get(project.id);
@@ -468,6 +486,11 @@ export function buildProjectIntelligenceCards(input: {
       const actualHoursToday = todayExec?.actualHours ?? 0;
 
       const cardSuggestions: string[] = [];
+      if (!intel.layers.nature.needsDailyWork) {
+        cardSuggestions.push(
+          `Batch recommended — ${intel.layers.external.hoursPerDayRequired}h/day pace, no daily work needed`
+        );
+      }
       if (intel.warnings.length > 0) cardSuggestions.push(...intel.warnings.slice(0, 2));
       if (state && state.overfocusStreak >= 2) {
         cardSuggestions.push("Over-focus streak — system is pulling hours back");
@@ -503,6 +526,9 @@ export function buildProjectIntelligenceCards(input: {
         actualHoursToday: round1(actualHoursToday),
         plannedHoursWeek: round1(plannedHoursWeek),
         actualHoursWeek: round1(actualHoursWeek),
+        needsDailyWork: intel.layers.nature.needsDailyWork,
+        hoursPerDayRequired: intel.layers.external.hoursPerDayRequired,
+        schedulingMode: intel.schedulingMode,
         suggestions: cardSuggestions.slice(0, 3),
       };
     });
@@ -585,13 +611,15 @@ export function scoreActiveProjects(
   learning: LearningState[],
   fixedEvents: Parameters<typeof scoreProjects>[2],
   adHoc: Parameters<typeof scoreProjects>[3],
-  refDate: string
+  refDate: string,
+  settings: CapacityConfig
 ) {
   return scoreProjects(
     projects.filter((p) => p.status === "active"),
     learning,
     fixedEvents,
     adHoc,
-    refDate
+    refDate,
+    settings
   );
 }
