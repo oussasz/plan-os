@@ -27,13 +27,17 @@ export const authConfig = {
         if (!email || !password) return null;
         if (email !== env.AUTH_EMAIL || password !== env.AUTH_PASSWORD) return null;
 
-        const user = await db.user.upsert({
-          where: { email },
-          create: { email, name: "Planner" },
-          update: {},
-        });
-
-        return { id: user.id, email: user.email, name: user.name };
+        try {
+          const user = await db.user.upsert({
+            where: { email },
+            create: { email, name: "Planner" },
+            update: {},
+          });
+          return { id: user.id, email: user.email, name: user.name };
+        } catch (error) {
+          console.error("[auth] database unreachable during login:", error);
+          return null;
+        }
       },
     }),
   ],
