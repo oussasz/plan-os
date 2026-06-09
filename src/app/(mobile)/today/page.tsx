@@ -3,6 +3,7 @@
 import { RefreshCw } from "lucide-react";
 
 import { CloseOutDialog } from "~/components/plan/close-out-dialog";
+import { TodayAllocationSummary } from "~/components/plan/today-allocation-summary";
 import { TimelineBlocks } from "~/components/plan/timeline-blocks";
 import { Button } from "~/components/ui/button";
 import { api } from "~/trpc/react";
@@ -58,7 +59,10 @@ export default function TodayPage() {
       {isLoading ? (
         <p className="text-slate-500">Loading plan…</p>
       ) : (
-        <TimelineBlocks blocks={plan?.blocks ?? []} />
+        <>
+          <TodayAllocationSummary blocks={plan?.blocks ?? []} />
+          <TimelineBlocks blocks={plan?.blocks ?? []} />
+        </>
       )}
     </main>
   );

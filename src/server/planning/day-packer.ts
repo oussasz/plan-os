@@ -126,20 +126,43 @@ export function packDay(input: {
   const maxDailyPerProject = dayCapacityHours * (settings.maxProjectSharePct / 100);
   const placedToday = new Map<string, number>();
 
+  const morningCutoff = workStart + 4 * 60;
   const sortedSlots = [...slots].sort((a, b) => a.start - b.start);
+
+  function sortCandidates(list: ProjectInput[], slotStart: number): ProjectInput[] {
+    return [...list].sort((a, b) => {
+      const aMorning = a.preferredTimeOfDay === "morning" && slotStart < morningCutoff ? 1 : 0;
+      const bMorning = b.preferredTimeOfDay === "morning" && slotStart < morningCutoff ? 1 : 0;
+      if (bMorning !== aMorning) return bMorning - aMorning;
+      const aHighFocus = a.focusDemand === "high" ? 1 : 0;
+      const bHighFocus = b.focusDemand === "high" ? 1 : 0;
+      if (bHighFocus !== aHighFocus) return bHighFocus - aHighFocus;
+      return (remainingHours.get(b.id) ?? 0) - (remainingHours.get(a.id) ?? 0);
+    });
+  }
 
   for (const slot of sortedSlots) {
     let cursor = slot.start;
     while (cursor + blockMins <= slot.end) {
-      const candidates = activeProjects
-        .filter((p) => (remainingHours.get(p.id) ?? 0) > 0)
-        .filter((p) => (placedToday.get(p.id) ?? 0) < (p.maxDailyHours ?? maxDailyPerProject))
-        .sort((a, b) => (remainingHours.get(b.id) ?? 0) - (remainingHours.get(a.id) ?? 0));
+      const candidates = sortCandidates(
+        activeProjects
+          .filter((p) => (remainingHours.get(p.id) ?? 0) > 0)
+          .filter((p) => (placedToday.get(p.id) ?? 0) < (p.maxDailyHours ?? maxDailyPerProject)),
+        cursor
+      );
 
       if (candidates.length === 0) break;
 
       let pick = candidates[0]!;
-      if (lastProjectId && consecutiveSame >= 2) {
+      const forceSwitch =
+        lastProjectId &&
+        consecutiveSame >= 2 &&
+        (projectMap.get(lastProjectId)?.focusDemand === "high" ||
+          projectMap.get(lastProjectId)?.overImmersionRisk === "high");
+      if (forceSwitch) {
+        const alt = candidates.find((c) => c.id !== lastProjectId);
+        if (alt) pick = alt;
+      } else if (lastProjectId && consecutiveSame >= 2) {
         const alt = candidates.find((c) => c.id !== lastProjectId);
         if (alt) pick = alt;
       }
@@ -154,7 +177,14 @@ export function packDay(input: {
       if (blockHours < 0.25) break;
 
       const blockEnd = cursor + blockHours * 60;
-      const blockType: BlockType = pick.requiresDeepFocus ? "deep_work" : "execution";
+      const blockType: BlockType =
+        pick.focusDemand === "high"
+          ? "deep_work"
+          : pick.focusDemand === "low" || pick.projectType === "maintenance"
+            ? "admin"
+            : pick.requiresDeepFocus
+              ? "deep_work"
+              : "execution";
 
       blocks.push({
         startTime: formatMinutes(cursor),

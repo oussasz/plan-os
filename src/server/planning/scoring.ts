@@ -8,19 +8,32 @@ import type {
 } from "./types";
 import { daysBetween } from "./week-utils";
 
+function levelToNorm(level: string): number {
+  const map: Record<string, number> = {
+    low: 0.25,
+    medium: 0.5,
+    high: 0.75,
+    critical: 1,
+  };
+  return map[level] ?? 0.5;
+}
+
+function focusToNorm(demand: string): number {
+  const map: Record<string, number> = { low: 0.3, medium: 0.6, high: 1 };
+  return map[demand] ?? 0.5;
+}
+
 function computeUrgency(project: ProjectInput, refDate: string): number {
-  if (!project.deadline) return 0.1;
+  const fromLevel = levelToNorm(project.urgencyLevel);
+  if (!project.deadline) return Math.max(fromLevel, 0.1);
   const daysLeft = daysBetween(refDate, project.deadline);
-  if (daysLeft < 0) return 1;
-  if (daysLeft <= 3) return 0.95;
-  if (daysLeft <= 7) return 0.85;
-  if (daysLeft <= 14) return 0.65;
-  if (daysLeft <= 30) return 0.4;
-  return 0.15;
+  const fromDeadline =
+    daysLeft < 0 ? 1 : daysLeft <= 3 ? 0.95 : daysLeft <= 7 ? 0.85 : daysLeft <= 14 ? 0.65 : daysLeft <= 30 ? 0.4 : 0.15;
+  return Math.max(fromLevel, fromDeadline);
 }
 
 function computeImportance(project: ProjectInput): number {
-  return Math.min(1, project.importanceWeight / 10);
+  return Math.min(1, project.importanceLevel / 5);
 }
 
 function computeHistorical(learning: LearningState | undefined, refDate: string): number {
@@ -57,8 +70,16 @@ function computeDependency(
     (e) => e.projectId === project.id && e.date >= refDate && e.date <= weekEnd.toISOString().split("T")[0]!
   );
   if (linked.length > 0) return Math.min(1, 0.5 + linked.length * 0.15);
-  if (project.projectType === "client") return 0.4;
+  if (project.projectType === "client" || project.projectType === "emergency") return 0.5;
+  if (project.projectType === "maintenance") return 0.2;
   return 0.1;
+}
+
+function computeRiskPenalty(project: ProjectInput): number {
+  if (project.focusDemand === "high" && project.overImmersionRisk === "high") return 0.7;
+  if (project.overImmersionRisk === "high") return 0.8;
+  if (project.overImmersionRisk === "medium") return 0.9;
+  return 1;
 }
 
 export function scoreProjects(
@@ -83,20 +104,24 @@ export function scoreProjects(
     const driftPenalty = state?.driftPenaltyMultiplier ?? 1;
     const urgency = Math.min(1, computeUrgency(project, refDate) + (adHocBoost.get(project.id) ?? 0));
     const importance = computeImportance(project);
-    const effortFit = project.requiresDeepFocus ? 0.8 : 0.5;
-    const context = project.requiresDeepFocus ? 0.85 : 0.4;
+    const effortFit = focusToNorm(project.focusDemand);
+    const context = project.focusDemand === "high" ? 0.85 : project.focusDemand === "medium" ? 0.55 : 0.35;
     const fairness = computeFairness(project.id, active.length, state);
     const dependency = computeDependency(project, fixedEvents, refDate);
     const historical = computeHistorical(state, refDate);
+    const riskPenalty = computeRiskPenalty(project);
+    const flexibilityFactor = project.flexibility === "flexible" ? 0.92 : 1;
 
     const raw =
-      urgency * 0.22 +
-      importance * 0.18 +
-      effortFit * 0.12 +
-      context * 0.1 +
-      fairness * 0.15 +
-      dependency * 0.13 +
-      historical * 0.1;
+      (urgency * 0.22 +
+        importance * 0.18 +
+        effortFit * 0.12 +
+        context * 0.1 +
+        fairness * 0.15 +
+        dependency * 0.13 +
+        historical * 0.1) *
+      riskPenalty *
+      flexibilityFactor;
 
     return {
       project,

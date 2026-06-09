@@ -59,14 +59,27 @@ async function loadEngineInputs(db: PrismaClient, userId: string) {
   const projectInputs: ProjectInput[] = projects.map((p) => ({
     id: p.id,
     name: p.name,
-    projectType: p.projectType,
+    projectType: p.projectType as ProjectInput["projectType"],
     status: p.status,
     schedulingMode: p.schedulingMode as ProjectInput["schedulingMode"],
+    effortSize: (p.effortSize ?? "medium") as ProjectInput["effortSize"],
+    importanceLevel: p.importanceLevel ?? Math.ceil(p.importanceWeight / 2),
     importanceWeight: p.importanceWeight,
+    urgencyLevel: (p.urgencyLevel ?? "medium") as ProjectInput["urgencyLevel"],
+    urgencyOverride: p.urgencyOverride ?? false,
+    focusDemand: (p.focusDemand ?? (p.requiresDeepFocus ? "high" : "medium")) as ProjectInput["focusDemand"],
+    overImmersionRisk: (p.overImmersionRisk ?? "medium") as ProjectInput["overImmersionRisk"],
+    flexibility: (p.flexibility ?? "flexible") as ProjectInput["flexibility"],
     deadline: p.deadline ? toDateStr(p.deadline) : null,
     estimatedHoursRemaining: p.estimatedHoursRemaining ? Number(p.estimatedHoursRemaining) : null,
     maxDailyHours: p.maxDailyHours ? Number(p.maxDailyHours) : null,
     requiresDeepFocus: p.requiresDeepFocus,
+    preferredTimeOfDay:
+      p.focusDemand === "high"
+        ? "morning"
+        : p.focusDemand === "low" || p.projectType === "maintenance"
+          ? "afternoon"
+          : "flexible",
   }));
 
   const fixedInputs: FixedEventInput[] = fixedEvents.map((e) => ({

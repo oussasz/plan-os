@@ -74,10 +74,14 @@ export function generatePlan(context: EngineContext): EngineResult | null {
 
   const remainingByProject = new Map(weeklyAllocations.map((a) => [a.projectId, a.hours]));
   const projectReasons = new Map(
-    scored.map((s) => [
-      s.project.id,
-      s.urgency >= 0.7 ? "Urgent deadline" : s.historical >= 0.7 ? "Neglected — catch up" : "Balanced focus",
-    ])
+    scored.map((s) => {
+      if (s.urgency >= 0.7) return [s.project.id, "Urgent deadline"];
+      if (s.historical >= 0.7) return [s.project.id, "Neglected — catch up"];
+      if (s.project.focusDemand === "low") return [s.project.id, "Low focus slot"];
+      if (s.project.overImmersionRisk === "high") return [s.project.id, "Capped — anti-drowning"];
+      if (s.importance >= 0.7) return [s.project.id, "High real value"];
+      return [s.project.id, "Balanced focus"];
+    })
   );
 
   const dailyPlans: EngineResult["dailyPlans"] = [];
