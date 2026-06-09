@@ -1,7 +1,7 @@
-import { buildAntiDrowningWarnings, computeMaxDailyCap } from "./anti-drowning";
+import { buildAllocationContract } from "./allocation-contract";
+import { buildAntiDrowningWarnings } from "./anti-drowning";
 import {
   computeAutoUrgencyFromDeadline,
-  deriveIntelligenceFromLayers,
   resolveEstimatedHours,
 } from "./signal-layers";
 import {
@@ -12,8 +12,10 @@ import {
 import type {
   CapacityConfig,
   LearningState,
+  PreferredTimeOfDay,
   PriorityBand,
   ProjectDraft,
+  ProjectInput,
   ProjectIntelligenceResult,
 } from "./types";
 import { DEFAULT_CAPACITY } from "./types";
@@ -27,6 +29,29 @@ function toPriorityBand(score: number): PriorityBand {
 export { computeAutoUrgencyFromDeadline as computeAutoUrgency };
 export { resolveEstimatedHours };
 
+function draftToProjectInput(draft: ProjectDraft, preferredTimeOfDay: PreferredTimeOfDay): ProjectInput {
+  return {
+    id: "preview",
+    name: draft.name,
+    projectType: draft.projectType,
+    status: "active",
+    schedulingMode: "flexible",
+    effortSize: draft.effortSize,
+    importanceLevel: draft.importanceLevel,
+    importanceWeight: draft.importanceLevel * 2,
+    urgencyLevel: draft.urgencyLevel,
+    urgencyOverride: draft.urgencyOverride,
+    focusDemand: draft.focusDemand,
+    overImmersionRisk: draft.overImmersionRisk,
+    flexibility: draft.flexibility,
+    deadline: draft.deadline,
+    estimatedHoursRemaining: draft.estimatedHoursRemaining,
+    maxDailyHours: null,
+    requiresDeepFocus: requiresDeepFocus(draft.focusDemand),
+    preferredTimeOfDay,
+  };
+}
+
 export function analyzeProjectIntelligence(
   draft: ProjectDraft,
   settings: CapacityConfig = DEFAULT_CAPACITY,
@@ -34,24 +59,34 @@ export function analyzeProjectIntelligence(
   learning?: LearningState
 ): ProjectIntelligenceResult {
   const today = refDate ?? new Date().toISOString().split("T")[0]!;
-  const layers = deriveIntelligenceFromLayers(draft, settings, today, learning);
-
-  const maxDailyCap = computeMaxDailyCap(draft, settings, layers);
-  const suggestedDailyHours = Math.min(layers.suggestedDailyHours, maxDailyCap);
-  const schedulingMode = layers.nature.schedulingMode;
   const preferredTimeOfDay = derivePreferredTimeOfDay(draft.focusDemand, draft.projectType);
+  const contract = buildAllocationContract(
+    draftToProjectInput(draft, preferredTimeOfDay),
+    settings,
+    today,
+    learning
+  );
+
+  const maxDailyCap = contract.maxSafeDailyCap;
+  const suggestedDailyHours = contract.executionDailyHours;
+  const schedulingMode = contract.schedulingMode;
   const suggestedSessions = computeSuggestedSessions(suggestedDailyHours, settings.blockMinutes);
-  const estimatedHours = resolveEstimatedHours(draft);
-  const warnings = buildAntiDrowningWarnings(draft, maxDailyCap, layers);
+  const estimatedHours = contract.estimatedHoursRemaining;
+  const warnings = buildAntiDrowningWarnings(draft, maxDailyCap, {
+    external: contract.layers.external,
+    nature: contract.layers.nature,
+    behavioral: contract.layers.behavioral,
+    fitsWithoutCramming: contract.layers.external.fitsWithoutCramming,
+  });
 
   const reasons: string[] = [];
-  if (layers.external.effectiveUrgency === "critical" && layers.nature.needsDailyWork) {
+  if (contract.layers.external.effectiveUrgency === "critical" && contract.needsDailyWork) {
     reasons.push("Urgent deadline — daily pace required");
-  } else if (layers.external.effectiveUrgency === "critical" && !layers.nature.needsDailyWork) {
+  } else if (contract.layers.external.effectiveUrgency === "critical" && !contract.needsDailyWork) {
     reasons.push("Urgent but batchable — spread across days");
   } else if (draft.importanceLevel >= 4) {
     reasons.push("High real value");
-  } else if (!layers.nature.needsDailyWork) {
+  } else if (!contract.needsDailyWork) {
     reasons.push("Batch scheduling — no daily pressure needed");
   } else {
     reasons.push("Balanced focus");
@@ -59,55 +94,32 @@ export function analyzeProjectIntelligence(
 
   if (draft.focusDemand === "low") reasons.push("Low focus slot");
   if (draft.projectType === "maintenance") reasons.push("Maintenance window");
-  if (layers.fitsWithoutCramming) reasons.push("Deadline fits without cramming");
+  if (contract.layers.external.fitsWithoutCramming) reasons.push("Deadline fits without cramming");
 
-  const priorityScore = layers.priorityScore;
+  const priorityScore = contract.priorityScore;
 
   return {
     priorityBand: toPriorityBand(priorityScore),
     compositeScore: priorityScore,
     priorityScore,
     suggestedDailyHours,
+    executionDailyHours: suggestedDailyHours,
     suggestedSessions,
     preferredTimeOfDay,
     maxDailyCap,
     schedulingMode,
     estimatedHours,
     requiresDeepFocus: requiresDeepFocus(draft.focusDemand),
-    autoUrgencyLevel: layers.external.autoUrgencyLevel,
+    autoUrgencyLevel: computeAutoUrgencyFromDeadline(draft, today),
     warnings,
-    layers: {
-      external: {
-        score: layers.external.score,
-        timePressure: layers.external.timePressure,
-        importanceNorm: layers.external.importanceNorm,
-        hoursPerDayRequired: layers.external.hoursPerDayRequired,
-        daysLeft: layers.external.daysLeft,
-        effectiveUrgency: layers.external.effectiveUrgency,
-        fitsWithoutCramming: layers.fitsWithoutCramming,
-      },
-      nature: {
-        score: layers.nature.score,
-        sustainableDailyCap: layers.nature.sustainableDailyCap,
-        natureDampener: layers.nature.natureDampener,
-        needsDailyWork: layers.nature.needsDailyWork,
-        schedulingMode: layers.nature.schedulingMode,
-      },
-      behavioral: {
-        score: layers.behavioral.score,
-        multiplier: layers.behavioral.multiplier,
-        behavioralCap: layers.behavioral.behavioralCap,
-        overfocusStreak: layers.behavioral.overfocusStreak,
-        neglectDays: layers.behavioral.neglectDays,
-      },
-    },
+    layers: contract.layers,
     scoreBreakdown: {
-      importance: Math.round(layers.external.importanceNorm * 30),
-      urgency: Math.round(layers.external.timePressure * 25),
-      deadlinePressure: Math.round(layers.external.timePressure * 20),
-      focusDemand: Math.round(layers.nature.score * 0.1),
+      importance: Math.round(contract.layers.external.importanceNorm * 30),
+      urgency: Math.round(contract.layers.external.timePressure * 25),
+      deadlinePressure: Math.round(contract.layers.external.timePressure * 20),
+      focusDemand: Math.round(contract.layers.nature.score * 0.1),
       flexibilityPenalty: draft.flexibility === "flexible" ? 5 : 0,
-      riskAdjustment: Math.round((layers.behavioral.multiplier - 1) * 20),
+      riskAdjustment: Math.round((contract.layers.behavioral.multiplier - 1) * 20),
     },
     reasons,
   };

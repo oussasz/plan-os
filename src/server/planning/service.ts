@@ -1,15 +1,20 @@
 import type { Prisma, PrismaClient } from "../../../generated/prisma";
 import {
-  applyDynamicReallocation,
+  applyContractRuntimeAdjustments,
   buildCognitiveDayState,
   buildProjectIntelligenceCards,
   enforceAntiDrift,
-  scoreActiveProjects,
+  getActiveAllocationContracts,
   type CognitiveDayState,
   type ExecutionSnapshot,
   type ProjectIntelligenceCard,
   type ReallocationRecord,
 } from "./cognitive-controller";
+import {
+  buildAllocationContracts,
+  computeBatchDayTargets,
+  contractReason,
+} from "./allocation-contract";
 import {
   resolveCloseOutProjectUpdate,
   type CloseOutProjectResult,
@@ -17,7 +22,6 @@ import {
 import { packDay } from "./day-packer";
 import { generatePlan } from "./engine";
 import { analyzeExecution, computeLearningUpdates } from "./feedback";
-import { scoreProjects } from "./scoring";
 import type {
   AdHocInput,
   CapacityConfig,
@@ -155,23 +159,16 @@ export async function ensureCapacitySettings(db: PrismaClient, userId: string) {
 function buildProjectReasons(
   projectInputs: ProjectInput[],
   learningInputs: LearningState[],
-  fixedInputs: FixedEventInput[],
-  adHocInputs: AdHocInput[],
   refDate: string,
   settings: CapacityConfig
 ) {
-  const active = projectInputs.filter((p) => p.status === "active");
-  const scored = scoreProjects(active, learningInputs, fixedInputs, adHocInputs, refDate, settings);
-  return new Map(
-    scored.map((s) => {
-      if (s.urgency >= 0.7) return [s.project.id, "Urgent deadline"];
-      if (s.historical >= 0.7) return [s.project.id, "Neglected — catch up"];
-      if (s.project.focusDemand === "low") return [s.project.id, "Low focus slot"];
-      if (s.project.overImmersionRisk === "high") return [s.project.id, "Capped — anti-drowning"];
-      if (s.importance >= 0.7) return [s.project.id, "High real value"];
-      return [s.project.id, "Balanced focus"];
-    })
+  const contracts = buildAllocationContracts(
+    projectInputs,
+    learningInputs,
+    settings,
+    refDate
   );
+  return new Map([...contracts.values()].map((c) => [c.projectId, contractReason(c)]));
 }
 
 function blockWorkHours(startTime: string, endTime: string): number {
@@ -301,33 +298,36 @@ async function computeTodayCognitiveState(
   }
 
   const fixedToday = fixedInputs.filter((e) => e.date === input.today).length;
-  const scored = scoreActiveProjects(
+  const contracts = getActiveAllocationContracts(
     projectInputs,
     learningInputs,
-    fixedInputs,
-    adHocInputs,
-    input.today,
-    capacity
+    capacity,
+    input.today
   );
+  const { contracts: adjustedContracts, reallocations: contractReallocs } =
+    applyContractRuntimeAdjustments({
+      contracts,
+      projects: projectInputs.filter((p) => p.status === "active"),
+      learning: learningInputs,
+      weekExecution,
+      settings: capacity,
+      refDate: input.today,
+    });
+  const reallocations: ReallocationRecord[] = contractReallocs.map((r) => ({
+    projectId: r.projectId,
+    projectName: r.projectName,
+    beforeHours: r.beforeHours,
+    afterHours: r.afterHours,
+    reason: r.reason,
+  }));
 
   const active = projectInputs.filter((p) => p.status === "active");
-  const weekRemaining = new Map<string, number>();
-  for (const a of weekly?.allocations ?? []) {
-    weekRemaining.set(a.projectId, Number(a.plannedHours));
-  }
-  const { reallocations } = applyDynamicReallocation({
-    remainingHours: weekRemaining,
-    projects: active,
-    learning: learningInputs,
-    weekExecution,
-    dayCapacityHours: dayCapacity,
-    today: input.today,
-  });
   const { alerts: driftAlerts } = enforceAntiDrift({
     remainingHours: todayRemaining,
     projects: active,
     dayCapacityHours: dayCapacity,
     settings: capacity,
+    contracts: adjustedContracts,
   });
 
   return buildCognitiveDayState({
@@ -337,7 +337,7 @@ async function computeTodayCognitiveState(
     todayExecution,
     todayPlanned,
     todayBlocksPlannedRemaining: todayRemaining,
-    scored,
+    contracts: adjustedContracts,
     settings: capacity,
     today: input.today,
     scheduledHoursRemaining,
@@ -377,13 +377,11 @@ export async function getProjectIntelligenceCards(
   }
 
   const todayPlanned = hoursFromBlocks(todayPlan?.blocks ?? []);
-  const scored = scoreActiveProjects(
+  const contracts = getActiveAllocationContracts(
     projectInputs,
     learningInputs,
-    fixedInputs,
-    adHocInputs,
-    today,
-    capacity
+    capacity,
+    today
   );
 
   return buildProjectIntelligenceCards({
@@ -393,7 +391,7 @@ export async function getProjectIntelligenceCards(
     todayExecution,
     todayPlanned,
     weekPlanned,
-    scored,
+    contracts,
     settings: capacity,
     today,
   });
@@ -569,31 +567,40 @@ async function repackTodayPlan(
   const dayCapacity = capacity.weekdayHours[String(dow)] ?? capacity.dailyCapacityHours;
 
   const weekExecution = await loadWeekExecutionSnapshots(db, userId, weekStart);
-  const { adjusted } = applyDynamicReallocation({
-    remainingHours: remainingByProject,
+  let contracts = buildAllocationContracts(active, learningInputs, capacity, today);
+  const { contracts: adjustedContracts } = applyContractRuntimeAdjustments({
+    contracts,
     projects: active,
     learning: learningInputs,
     weekExecution,
-    dayCapacityHours: dayCapacity,
-    today,
+    settings: capacity,
+    refDate: today,
   });
+  contracts = adjustedContracts;
+
   const { capped, alerts: driftAlerts } = enforceAntiDrift({
-    remainingHours: adjusted,
+    remainingHours: remainingByProject,
     projects: active,
     dayCapacityHours: dayCapacity,
     settings: capacity,
+    contracts,
   });
   remainingByProject.clear();
   for (const [id, h] of capped) remainingByProject.set(id, h);
 
-  const projectReasons = buildProjectReasons(
-    projectInputs,
-    learningInputs,
-    fixedInputs,
-    adHocInputs,
-    today,
-    capacity
-  );
+  const planDates = getRemainingWeekDates(weekStart, weekStart).filter((d) => {
+    const dow = getDayOfWeek(d);
+    return capacity.workDays.includes(dow) && (capacity.weekdayHours[String(dow)] ?? 0) > 0;
+  });
+  const weeklyBudget = [...contracts.values()].map((c) => ({
+    projectId: c.projectId,
+    hours: remainingByProject.get(c.projectId) ?? 0,
+    priorityScore: c.priorityScore / 100,
+    driftPenalty: c.driftPenalty,
+  }));
+  const batchDayTargets = computeBatchDayTargets(planDates, contracts, weeklyBudget);
+
+  const projectReasons = buildProjectReasons(projectInputs, learningInputs, today, capacity);
   for (const alert of driftAlerts) {
     const reason = projectReasons.get(alert.projectId);
     if (reason) {
@@ -610,6 +617,8 @@ async function repackTodayPlan(
     settings: capacity,
     sortOrderStart: 0,
     projectReasons,
+    contracts,
+    batchDayTargets,
     effectiveStartMinutes: nowMinutes,
   });
 

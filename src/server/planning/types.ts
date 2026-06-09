@@ -106,7 +106,9 @@ export interface ProjectIntelligenceResult {
   /** Alias for priorityScore — kept for backward compatibility */
   compositeScore: number;
   priorityScore: number;
+  /** Alias for executionDailyHours from allocation contract */
   suggestedDailyHours: number;
+  executionDailyHours: number;
   suggestedSessions: number;
   preferredTimeOfDay: PreferredTimeOfDay;
   maxDailyCap: number;

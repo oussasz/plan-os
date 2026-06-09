@@ -1,11 +1,14 @@
+import {
+  applyContractRuntimeAdjustments,
+  buildAllocationContracts,
+  type AllocationContract,
+} from "./allocation-contract";
 import { analyzeProjectIntelligence } from "./project-intelligence";
-import { scoreProjects } from "./scoring";
 import type {
   CapacityConfig,
   LearningState,
   PriorityBand,
   ProjectInput,
-  ScoredProject,
 } from "./types";
 import { DEFAULT_CAPACITY } from "./types";
 import { daysBetween } from "./week-utils";
@@ -94,99 +97,17 @@ function projectNameMap(projects: ProjectInput[]): Map<string, string> {
   return new Map(projects.map((p) => [p.id, p.name]));
 }
 
-/** Adjust remaining hours based on execution pressure, neglect, and over-focus learning. */
-export function applyDynamicReallocation(input: {
-  remainingHours: Map<string, number>;
-  projects: ProjectInput[];
-  learning: LearningState[];
-  weekExecution: ExecutionSnapshot[];
-  dayCapacityHours: number;
-  today: string;
-}): { adjusted: Map<string, number>; reallocations: ReallocationRecord[] } {
-  const { remainingHours, projects, learning, weekExecution, dayCapacityHours, today } = input;
-  const learningMap = new Map(learning.map((l) => [l.projectId, l]));
-  const execMap = new Map(weekExecution.map((e) => [e.projectId, e]));
-  const names = projectNameMap(projects);
-  const adjusted = new Map(remainingHours);
-  const reallocations: ReallocationRecord[] = [];
-
-  for (const [projectId, hours] of remainingHours) {
-    if (hours <= 0) continue;
-    const state = learningMap.get(projectId);
-    const exec = execMap.get(projectId);
-    let multiplier = 1;
-    const reasons: string[] = [];
-
-    if (exec && exec.plannedHours > 0) {
-      const ratio = exec.actualHours / exec.plannedHours;
-      if (ratio > 1.2) {
-        multiplier *= 1 + Math.min(0.3, (ratio - 1) * 0.5);
-        reasons.push(`Workload +${Math.round((ratio - 1) * 100)}% over plan this week`);
-      } else if (ratio < 0.5 && exec.plannedHours >= 1) {
-        multiplier *= 0.8;
-        reasons.push("Under pace — hours reduced");
-      }
-    }
-
-    if (state) {
-      if (state.neglectDays >= 3) {
-        multiplier *= 1.25;
-        reasons.push(`Neglected ${state.neglectDays} days — catch-up boost`);
-      }
-      if (state.overfocusStreak >= 2) {
-        multiplier *= Math.max(0.5, state.driftPenaltyMultiplier);
-        reasons.push("Over-focus streak — hours trimmed");
-      } else if (state.driftPenaltyMultiplier < 1) {
-        multiplier *= state.driftPenaltyMultiplier;
-        reasons.push("Drift penalty active");
-      }
-    }
-
-    const project = projects.find((p) => p.id === projectId);
-    if (project && (project.urgencyLevel === "critical" || project.urgencyLevel === "high")) {
-      const deadlineBoost = project.deadline && daysBetween(today, project.deadline) <= 7;
-      if (deadlineBoost) {
-        multiplier *= 1.15;
-        reasons.push("Deadline pressure — hours increased");
-      }
-    }
-
-    multiplier = Math.max(0.25, Math.min(1.75, multiplier));
-    const after = round1(Math.min(hours * multiplier, dayCapacityHours));
-    if (Math.abs(after - hours) >= 0.2) {
-      adjusted.set(projectId, after);
-      reallocations.push({
-        projectId,
-        projectName: names.get(projectId) ?? projectId,
-        beforeHours: round1(hours),
-        afterHours: after,
-        reason: reasons.join("; ") || "Dynamic rebalance",
-      });
-    }
-  }
-
-  const total = [...adjusted.values()].reduce((s, h) => s + h, 0);
-  const maxToday = dayCapacityHours * 1.1;
-  if (total > maxToday) {
-    const scale = maxToday / total;
-    for (const [id, h] of adjusted) {
-      adjusted.set(id, round1(h * scale));
-    }
-  }
-
-  return { adjusted, reallocations };
-}
-
-/** Cap any single project above maxProjectSharePct and redistribute freed hours. */
+/** Cap any single project above contract maxSafeDailyCap (or global share fallback). */
 export function enforceAntiDrift(input: {
   remainingHours: Map<string, number>;
   projects: ProjectInput[];
   dayCapacityHours: number;
   settings: CapacityConfig;
+  contracts?: Map<string, AllocationContract>;
 }): { capped: Map<string, number>; alerts: DriftAlert[] } {
-  const { remainingHours, projects, dayCapacityHours, settings } = input;
+  const { remainingHours, projects, dayCapacityHours, settings, contracts } = input;
   const maxShare = settings.maxProjectSharePct / 100;
-  const maxHours = dayCapacityHours * maxShare;
+  const defaultMaxHours = dayCapacityHours * maxShare;
   const capped = new Map(remainingHours);
   const alerts: DriftAlert[] = [];
   const names = projectNameMap(projects);
@@ -196,6 +117,7 @@ export function enforceAntiDrift(input: {
 
   const overflow: { projectId: string; excess: number }[] = [];
   for (const [projectId, hours] of capped) {
+    const maxHours = contracts?.get(projectId)?.maxSafeDailyCap ?? defaultMaxHours;
     if (hours > maxHours) {
       const excess = hours - maxHours;
       capped.set(projectId, round1(maxHours));
@@ -262,22 +184,25 @@ export function detectDriftFromBlocks(input: {
   projects: ProjectInput[];
   dayCapacityHours: number;
   settings: CapacityConfig;
+  contracts?: Map<string, AllocationContract>;
 }): DriftAlert[] {
   const total = [...input.plannedByProject.values()].reduce((s, h) => s + h, 0);
   if (total <= 0) return [];
   const maxShare = input.settings.maxProjectSharePct;
+  const defaultCap = input.dayCapacityHours * (maxShare / 100);
   const names = projectNameMap(input.projects);
   const alerts: DriftAlert[] = [];
 
   for (const [projectId, hours] of input.plannedByProject) {
+    const cap = input.contracts?.get(projectId)?.maxSafeDailyCap ?? defaultCap;
     const sharePct = Math.round((hours / total) * 100);
-    if (sharePct > maxShare) {
+    if (hours > cap + 0.1 || sharePct > maxShare) {
       alerts.push({
         projectId,
         projectName: names.get(projectId) ?? projectId,
         sharePct,
-        message: `STOP: over-focus detected — ${names.get(projectId)} at ${sharePct}% of today`,
-        action: `Redistribute below ${maxShare}% cap (${round1(input.dayCapacityHours * (maxShare / 100))}h max)`,
+        message: `STOP: over-focus detected — ${names.get(projectId)} at ${round1(hours)}h (cap ${round1(cap)}h)`,
+        action: `Redistribute below ${round1(cap)}h safe cap`,
       });
     }
   }
@@ -288,16 +213,15 @@ export function buildSmartSuggestions(input: {
   projects: ProjectInput[];
   learning: LearningState[];
   weekExecution: ExecutionSnapshot[];
-  scored: ScoredProject[];
+  contracts: Map<string, AllocationContract>;
   today: string;
   driftAlerts: DriftAlert[];
   reallocations: ReallocationRecord[];
 }): SmartSuggestion[] {
-  const { projects, learning, weekExecution, scored, today, driftAlerts, reallocations } = input;
+  const { projects, learning, weekExecution, contracts, today, driftAlerts, reallocations } = input;
   const suggestions: SmartSuggestion[] = [];
   const learningMap = new Map(learning.map((l) => [l.projectId, l]));
   const execMap = new Map(weekExecution.map((e) => [e.projectId, e]));
-  const scoreMap = new Map(scored.map((s) => [s.project.id, s]));
 
   for (const alert of driftAlerts) {
     suggestions.push({
@@ -361,7 +285,7 @@ export function buildSmartSuggestions(input: {
     }
 
     const exec = execMap.get(project.id);
-    const score = scoreMap.get(project.id);
+    const contract = contracts.get(project.id);
 
     if (state && state.neglectDays >= 3) {
       suggestions.push({
@@ -381,12 +305,12 @@ export function buildSmartSuggestions(input: {
       });
     }
 
-    if (score && score.driftPenalty < 0.85) {
+    if (contract && contract.driftPenalty < 0.85) {
       suggestions.push({
         id: `penalty-${project.id}`,
         severity: "info",
         projectId: project.id,
-        message: `${project.name} priority reduced by learning loop (drift ×${score.driftPenalty}).`,
+        message: `${project.name} priority reduced by learning loop (drift ×${contract.driftPenalty}).`,
       });
     }
   }
@@ -437,7 +361,7 @@ export function buildProjectIntelligenceCards(input: {
   todayExecution: ExecutionSnapshot[];
   todayPlanned: Map<string, number>;
   weekPlanned: Map<string, number>;
-  scored: ScoredProject[];
+  contracts: Map<string, AllocationContract>;
   settings: CapacityConfig;
   today: string;
 }): ProjectIntelligenceCard[] {
@@ -448,7 +372,7 @@ export function buildProjectIntelligenceCards(input: {
     todayExecution,
     todayPlanned,
     weekPlanned,
-    scored,
+    contracts,
     settings,
     today,
   } = input;
@@ -456,7 +380,6 @@ export function buildProjectIntelligenceCards(input: {
   const learningMap = new Map(learning.map((l) => [l.projectId, l]));
   const weekExecMap = new Map(weekExecution.map((e) => [e.projectId, e]));
   const todayExecMap = new Map(todayExecution.map((e) => [e.projectId, e]));
-  const scoreMap = new Map(scored.map((s) => [s.project.id, s]));
 
   return projects
     .filter((p) => p.status === "active")
@@ -476,7 +399,7 @@ export function buildProjectIntelligenceCards(input: {
         estimatedHoursRemaining: project.estimatedHoursRemaining,
       };
       const intel = analyzeProjectIntelligence(draft, settings, today, state);
-      const score = scoreMap.get(project.id);
+      const contract = contracts.get(project.id);
       const weekExec = weekExecMap.get(project.id);
       const todayExec = todayExecMap.get(project.id);
 
@@ -507,15 +430,15 @@ export function buildProjectIntelligenceCards(input: {
         projectId: project.id,
         name: project.name,
         status: project.status,
-        priorityScore: round1((score?.score ?? intel.compositeScore / 100) * 100),
+        priorityScore: contract?.priorityScore ?? intel.priorityScore,
         priorityBand: intel.priorityBand,
         overloadRisk: riskFromSignals(
           project.overImmersionRisk,
           project.focusDemand,
           state?.overfocusStreak ?? 0
         ),
-        suggestedHoursToday: intel.suggestedDailyHours,
-        suggestedHoursWeek: round1(intel.suggestedDailyHours * 5),
+        suggestedHoursToday: contract?.executionDailyHours ?? intel.suggestedDailyHours,
+        suggestedHoursWeek: round1(weekPlanned.get(project.id) ?? (contract?.executionDailyHours ?? intel.suggestedDailyHours) * 5),
         burnoutRisk: riskFromSignals(
           project.overImmersionRisk,
           project.focusDemand,
@@ -541,7 +464,7 @@ export function buildCognitiveDayState(input: {
   todayExecution: ExecutionSnapshot[];
   todayPlanned: Map<string, number>;
   todayBlocksPlannedRemaining: Map<string, number>;
-  scored: ScoredProject[];
+  contracts: Map<string, AllocationContract>;
   settings: CapacityConfig;
   today: string;
   scheduledHoursRemaining: number;
@@ -579,6 +502,7 @@ export function buildCognitiveDayState(input: {
     projects: input.projects,
     dayCapacityHours: input.settings.dailyCapacityHours,
     settings: input.settings,
+    contracts: input.contracts,
   });
 
   const allDrift = [...input.driftAlerts, ...blockDrift].filter(
@@ -589,7 +513,7 @@ export function buildCognitiveDayState(input: {
     projects: input.projects,
     learning: input.learning,
     weekExecution: input.weekExecution,
-    scored: input.scored,
+    contracts: input.contracts,
     today: input.today,
     driftAlerts: allDrift,
     reallocations: input.reallocations,
@@ -606,20 +530,13 @@ export function buildCognitiveDayState(input: {
   };
 }
 
-export function scoreActiveProjects(
+export function getActiveAllocationContracts(
   projects: ProjectInput[],
   learning: LearningState[],
-  fixedEvents: Parameters<typeof scoreProjects>[2],
-  adHoc: Parameters<typeof scoreProjects>[3],
-  refDate: string,
-  settings: CapacityConfig
-) {
-  return scoreProjects(
-    projects.filter((p) => p.status === "active"),
-    learning,
-    fixedEvents,
-    adHoc,
-    refDate,
-    settings
-  );
+  settings: CapacityConfig,
+  refDate: string
+): Map<string, AllocationContract> {
+  return buildAllocationContracts(projects, learning, settings, refDate);
 }
+
+export { applyContractRuntimeAdjustments };

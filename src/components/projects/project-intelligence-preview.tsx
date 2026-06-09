@@ -63,8 +63,8 @@ export function ProjectIntelligencePreview({ preview }: { preview: Preview | und
           <p className="font-semibold">{layers.external.hoursPerDayRequired}h/day</p>
         </div>
         <div className="rounded-lg border bg-violet-50 p-3">
-          <p className="text-slate-500">Suggested daily</p>
-          <p className="font-semibold">{preview.suggestedDailyHours}h</p>
+          <p className="text-slate-500">Execution target</p>
+          <p className="font-semibold">{preview.executionDailyHours ?? preview.suggestedDailyHours}h/day</p>
         </div>
         <div className="rounded-lg border bg-slate-50 p-3">
           <p className="text-slate-500">Max cap</p>

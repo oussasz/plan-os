@@ -1,3 +1,5 @@
+import type { AllocationContract } from "./allocation-contract";
+import { getDailyExecutionTarget } from "./allocation-contract";
 import type {
   BlockType,
   CapacityConfig,
@@ -17,10 +19,6 @@ function formatMinutes(minutes: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-function durationMinutes(start: string, end: string): number {
-  return parseMinutes(end) - parseMinutes(start);
-}
-
 export function packDay(input: {
   date: string;
   dayCapacityHours: number;
@@ -30,7 +28,8 @@ export function packDay(input: {
   settings: CapacityConfig;
   sortOrderStart: number;
   projectReasons: Map<string, string>;
-  /** When set (e.g. current local time), project slots start here instead of workStartTime. */
+  contracts: Map<string, AllocationContract>;
+  batchDayTargets?: Map<string, Map<string, number>>;
   effectiveStartMinutes?: number;
 }): { blocks: PackedBlock[]; sortOrder: number } {
   const {
@@ -42,6 +41,8 @@ export function packDay(input: {
     settings,
     sortOrderStart,
     projectReasons,
+    contracts,
+    batchDayTargets = new Map(),
     effectiveStartMinutes,
   } = input;
 
@@ -137,14 +138,22 @@ export function packDay(input: {
   let contextSwitches = 0;
   const blockMins = settings.blockMinutes;
   const breakMins = settings.breakMinutes;
-  const maxDailyPerProject = dayCapacityHours * (settings.maxProjectSharePct / 100);
   const placedToday = new Map<string, number>();
 
   const morningCutoff = workStart + 4 * 60;
   const sortedSlots = [...slots].sort((a, b) => a.start - b.start);
 
+  function dailyTarget(projectId: string): number {
+    const contract = contracts.get(projectId);
+    if (!contract) return 0;
+    return getDailyExecutionTarget(contract, date, batchDayTargets);
+  }
+
   function sortCandidates(list: ProjectInput[], slotStart: number): ProjectInput[] {
     return [...list].sort((a, b) => {
+      const aUrgency = contracts.get(a.id)?.urgencyPressure ?? 0;
+      const bUrgency = contracts.get(b.id)?.urgencyPressure ?? 0;
+      if (bUrgency !== aUrgency) return bUrgency - aUrgency;
       const aMorning = a.preferredTimeOfDay === "morning" && slotStart < morningCutoff ? 1 : 0;
       const bMorning = b.preferredTimeOfDay === "morning" && slotStart < morningCutoff ? 1 : 0;
       if (bMorning !== aMorning) return bMorning - aMorning;
@@ -159,9 +168,16 @@ export function packDay(input: {
     let cursor = slot.start;
     while (cursor + blockMins <= slot.end) {
       const candidates = sortCandidates(
-        activeProjects
-          .filter((p) => (remainingHours.get(p.id) ?? 0) > 0)
-          .filter((p) => (placedToday.get(p.id) ?? 0) < (p.maxDailyHours ?? maxDailyPerProject)),
+        activeProjects.filter((p) => {
+          const weeklyLeft = remainingHours.get(p.id) ?? 0;
+          if (weeklyLeft <= 0) return false;
+          const contract = contracts.get(p.id);
+          if (!contract) return false;
+          const target = dailyTarget(p.id);
+          if (target <= 0) return false;
+          const placed = placedToday.get(p.id) ?? 0;
+          return placed < target && placed < contract.maxSafeDailyCap;
+        }),
         cursor
       );
 
@@ -186,8 +202,19 @@ export function packDay(input: {
         if (same) pick = same;
       }
 
+      const contract = contracts.get(pick.id)!;
+      const target = dailyTarget(pick.id);
+      const placed = placedToday.get(pick.id) ?? 0;
       const remaining = remainingHours.get(pick.id) ?? 0;
-      const blockHours = Math.min(blockMins / 60, remaining, maxDailyPerProject - (placedToday.get(pick.id) ?? 0));
+      const roomInTarget = target - placed;
+      const roomInCap = contract.maxSafeDailyCap - placed;
+
+      const blockHours = Math.min(
+        blockMins / 60,
+        remaining,
+        roomInTarget,
+        roomInCap
+      );
       if (blockHours < 0.25) break;
 
       const blockEnd = cursor + blockHours * 60;

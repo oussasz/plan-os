@@ -69,8 +69,15 @@ export function ProjectDetailView({ detail }: { detail: Detail }) {
           <Field label="Max daily hours" value={project.maxDailyHours ? `${Number(project.maxDailyHours)}h` : "—"} />
           <Field label="Deep focus" value={project.requiresDeepFocus ? "Yes" : "No"} />
           <Field label="Importance weight" value={project.importanceWeight} />
+          <Field
+            label="Execution target"
+            value={`${intelligence.executionDailyHours ?? intelligence.suggestedDailyHours}h/day`}
+          />
           {weeklyAllocation ? (
-            <Field label="This week planned" value={`${weeklyAllocation.plannedHours}h`} />
+            <Field
+              label="This week planned"
+              value={`${weeklyAllocation.plannedHours}h (pace budget)`}
+            />
           ) : (
             <Field label="This week planned" value="Not scheduled yet" />
           )}

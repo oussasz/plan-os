@@ -329,11 +329,9 @@ export function computePriorityScore(
   const natureNorm = nature.score / 100;
   const behavioralNorm = behavioral.score / 100;
 
-  const raw =
-    externalNorm * 0.35 + natureNorm * 0.25 + behavioralNorm * 0.4;
-  const adjusted = raw * behavioral.multiplier;
+  const raw = externalNorm * 0.35 + natureNorm * 0.25 + behavioralNorm * 0.4;
 
-  return Math.round(Math.min(100, Math.max(0, adjusted * 100)));
+  return Math.round(Math.min(100, Math.max(0, raw * 100)));
 }
 
 export function resolveEstimatedHours(draft: LayerInput): number {
@@ -384,30 +382,3 @@ export function deriveIntelligenceFromLayers(
   };
 }
 
-/** Weekly allocation score (0–1) using shared layers + fairness/dependency/historical. */
-export function computeWeeklyLayerScore(input: {
-  layers: SignalLayersResult;
-  fairness: number;
-  dependency: number;
-  historical: number;
-  adHocBoost: number;
-}): number {
-  const layers = input.layers;
-
-  const externalNorm = layers.external.score / 100;
-  const natureNorm = layers.nature.score / 100;
-  const behavioralNorm = layers.behavioral.multiplier;
-
-  const splittablePenalty = layers.nature.needsDailyWork ? 1 : 0.75;
-
-  const raw =
-    (externalNorm * 0.28 +
-      natureNorm * 0.12 +
-      input.fairness * 0.15 +
-      input.dependency * 0.13 +
-      input.historical * 0.1 +
-      behavioralNorm * 0.22) *
-    splittablePenalty;
-
-  return Math.max(0.01, Math.min(1, raw + input.adHocBoost * 0.1));
-}

@@ -1,4 +1,10 @@
-import { distributeWeeklyHours, scoreProjects } from "./scoring";
+import {
+  buildAllocationContracts,
+  computeBatchDayTargets,
+  computeWeeklyBudgetFromContracts,
+  contractReason,
+  type AllocationContract,
+} from "./allocation-contract";
 import { packDay } from "./day-packer";
 import type {
   AdHocInput,
@@ -11,11 +17,9 @@ import type {
   WeekMilestone,
 } from "./types";
 import {
-  addDays,
   getDayOfWeek,
   getMonthStart,
   getRemainingWeekDates,
-  getWeekDates,
   getWeekStart,
 } from "./week-utils";
 
@@ -32,7 +36,7 @@ export interface EngineContext {
 }
 
 export function generatePlan(context: EngineContext): EngineResult | null {
-  const { projects, fixedEvents, adHoc, learning, settings, refDate, fromDate, asOfMinutes } = context;
+  const { projects, fixedEvents, learning, settings, refDate, fromDate, asOfMinutes } = context;
   const active = projects.filter((p) => p.status === "active");
   if (active.length === 0) return null;
 
@@ -50,11 +54,11 @@ export function generatePlan(context: EngineContext): EngineResult | null {
     0
   );
 
-  const scored = scoreProjects(active, learning, fixedEvents, adHoc, refDate, settings);
-  const weeklyAllocations = distributeWeeklyHours(scored, totalCapacity, settings);
+  const contracts = buildAllocationContracts(active, learning, settings, refDate);
+  const weeklyAllocations = computeWeeklyBudgetFromContracts(contracts, planDates, totalCapacity);
+  const batchDayTargets = computeBatchDayTargets(planDates, contracts, weeklyAllocations);
 
   const monthWeeks = 4;
-  const monthCapacity = totalCapacity * (30 / 7);
   const monthBudgets: MonthlyBudget[] = weeklyAllocations.map((a) => {
     const project = active.find((p) => p.id === a.projectId)!;
     return {
@@ -76,14 +80,7 @@ export function generatePlan(context: EngineContext): EngineResult | null {
 
   const remainingByProject = new Map(weeklyAllocations.map((a) => [a.projectId, a.hours]));
   const projectReasons = new Map(
-    scored.map((s) => {
-      if (s.urgency >= 0.7) return [s.project.id, "Urgent deadline"];
-      if (s.historical >= 0.7) return [s.project.id, "Neglected — catch up"];
-      if (s.project.focusDemand === "low") return [s.project.id, "Low focus slot"];
-      if (s.project.overImmersionRisk === "high") return [s.project.id, "Capped — anti-drowning"];
-      if (s.importance >= 0.7) return [s.project.id, "High real value"];
-      return [s.project.id, "Balanced focus"];
-    })
+    [...contracts.values()].map((c) => [c.projectId, contractReason(c)])
   );
 
   const dailyPlans: EngineResult["dailyPlans"] = [];
@@ -103,6 +100,8 @@ export function generatePlan(context: EngineContext): EngineResult | null {
       settings,
       sortOrderStart: sortOrder,
       projectReasons,
+      contracts,
+      batchDayTargets,
       effectiveStartMinutes: date === refDate ? asOfMinutes : undefined,
     });
 
@@ -156,3 +155,5 @@ export function getPlannedHoursForDate(
   }
   return map;
 }
+
+export type { AllocationContract };

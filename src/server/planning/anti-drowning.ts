@@ -1,4 +1,10 @@
-import type { CapacityConfig, FocusDemand, OverImmersionRisk, ProjectDraft } from "./types";
+import type {
+  CapacityConfig,
+  FocusDemand,
+  OverImmersionRisk,
+  ProjectDraft,
+  SignalLayerBreakdown,
+} from "./types";
 import type { SignalLayersResult } from "./signal-layers";
 
 export function computeMaxDailyCap(
@@ -27,7 +33,12 @@ export function computeMaxDailyCap(
 export function buildAntiDrowningWarnings(
   draft: Pick<ProjectDraft, "focusDemand" | "overImmersionRisk" | "name" | "urgencyOverride" | "urgencyLevel">,
   maxDailyCap: number,
-  layers?: Pick<SignalLayersResult, "external" | "nature" | "behavioral" | "fitsWithoutCramming">
+  layers?: (Pick<SignalLayersResult, "external" | "nature" | "behavioral" | "fitsWithoutCramming"> | {
+    external: SignalLayerBreakdown["external"];
+    nature: SignalLayerBreakdown["nature"];
+    behavioral: SignalLayerBreakdown["behavioral"];
+    fitsWithoutCramming: boolean;
+  })
 ): string[] {
   const warnings: string[] = [];
 
