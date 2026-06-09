@@ -27,10 +27,12 @@ export interface EngineContext {
   settings: CapacityConfig;
   refDate: string;
   fromDate?: string;
+  /** Local minutes-from-midnight; applied when packing refDate so today starts at now. */
+  asOfMinutes?: number;
 }
 
 export function generatePlan(context: EngineContext): EngineResult | null {
-  const { projects, fixedEvents, adHoc, learning, settings, refDate, fromDate } = context;
+  const { projects, fixedEvents, adHoc, learning, settings, refDate, fromDate, asOfMinutes } = context;
   const active = projects.filter((p) => p.status === "active");
   if (active.length === 0) return null;
 
@@ -101,6 +103,7 @@ export function generatePlan(context: EngineContext): EngineResult | null {
       settings,
       sortOrderStart: sortOrder,
       projectReasons,
+      effectiveStartMinutes: date === refDate ? asOfMinutes : undefined,
     });
 
     sortOrder += blocks.length;

@@ -5,10 +5,10 @@ import type {
   PackedBlock,
   ProjectInput,
 } from "./types";
+import { parseTimeToMinutes } from "./week-utils";
 
 function parseMinutes(time: string): number {
-  const [h, m] = time.split(":").map(Number);
-  return (h ?? 0) * 60 + (m ?? 0);
+  return parseTimeToMinutes(time);
 }
 
 function formatMinutes(minutes: number): string {
@@ -30,6 +30,8 @@ export function packDay(input: {
   settings: CapacityConfig;
   sortOrderStart: number;
   projectReasons: Map<string, string>;
+  /** When set (e.g. current local time), project slots start here instead of workStartTime. */
+  effectiveStartMinutes?: number;
 }): { blocks: PackedBlock[]; sortOrder: number } {
   const {
     date,
@@ -40,6 +42,7 @@ export function packDay(input: {
     settings,
     sortOrderStart,
     projectReasons,
+    effectiveStartMinutes,
   } = input;
 
   const blocks: PackedBlock[] = [];
@@ -68,10 +71,20 @@ export function packDay(input: {
   const workStart = parseMinutes(settings.workStartTime);
   const lunchStart = parseMinutes(settings.lunchStartTime);
   const lunchEnd = lunchStart + settings.lunchMinutes;
-  const dayEnd = workStart + dayCapacityHours * 60;
+  let dayEnd = workStart + dayCapacityHours * 60;
+
+  for (const ev of dayFixed) {
+    dayEnd = Math.max(dayEnd, parseMinutes(ev.endTime));
+  }
+
+  let effectiveStart =
+    effectiveStartMinutes !== undefined ? Math.max(workStart, effectiveStartMinutes) : workStart;
+  if (lunchStart >= workStart && lunchEnd <= dayEnd && effectiveStart >= lunchStart && effectiveStart < lunchEnd) {
+    effectiveStart = lunchEnd;
+  }
 
   type Slot = { start: number; end: number };
-  const slots: Slot[] = [{ start: workStart, end: dayEnd }];
+  const slots: Slot[] = effectiveStart < dayEnd ? [{ start: effectiveStart, end: dayEnd }] : [];
 
   for (const b of blocks) {
     const bs = parseMinutes(b.startTime);
@@ -89,7 +102,8 @@ export function packDay(input: {
     slots.push(...next.filter((s) => s.end - s.start >= 15));
   }
 
-  if (lunchStart >= workStart && lunchEnd <= dayEnd) {
+  const includeLunch = lunchStart >= workStart && lunchEnd <= dayEnd && lunchEnd > effectiveStart;
+  if (includeLunch) {
     const next: Slot[] = [];
     for (const slot of slots) {
       if (lunchEnd <= slot.start || lunchStart >= slot.end) {

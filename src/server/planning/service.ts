@@ -1,6 +1,8 @@
 import type { Prisma, PrismaClient } from "../../../generated/prisma";
-import { generatePlan, getPlannedHoursForDate } from "./engine";
+import { packDay } from "./day-packer";
+import { generatePlan } from "./engine";
 import { analyzeExecution, computeLearningUpdates } from "./feedback";
+import { scoreProjects } from "./scoring";
 import type {
   AdHocInput,
   CapacityConfig,
@@ -9,7 +11,17 @@ import type {
   ProjectInput,
 } from "./types";
 import { DEFAULT_CAPACITY } from "./types";
-import { addDays, getToday, getWeekStart } from "./week-utils";
+import {
+  addDays,
+  formatMinutesAsTime,
+  getDayOfWeek,
+  getNowMinutesInTimezone,
+  getRemainingWeekDates,
+  getTodayInTimezone,
+  getWeekStart,
+  parseTimeToMinutes,
+  roundUpMinutes,
+} from "./week-utils";
 
 function toDateStr(d: Date): string {
   return d.toISOString().split("T")[0]!;
@@ -120,16 +132,49 @@ export async function ensureCapacitySettings(db: PrismaClient, userId: string) {
   });
 }
 
+function buildProjectReasons(
+  projectInputs: ProjectInput[],
+  learningInputs: LearningState[],
+  fixedInputs: FixedEventInput[],
+  adHocInputs: AdHocInput[],
+  refDate: string
+) {
+  const active = projectInputs.filter((p) => p.status === "active");
+  const scored = scoreProjects(active, learningInputs, fixedInputs, adHocInputs, refDate);
+  return new Map(
+    scored.map((s) => {
+      if (s.urgency >= 0.7) return [s.project.id, "Urgent deadline"];
+      if (s.historical >= 0.7) return [s.project.id, "Neglected — catch up"];
+      if (s.project.focusDemand === "low") return [s.project.id, "Low focus slot"];
+      if (s.project.overImmersionRisk === "high") return [s.project.id, "Capped — anti-drowning"];
+      if (s.importance >= 0.7) return [s.project.id, "High real value"];
+      return [s.project.id, "Balanced focus"];
+    })
+  );
+}
+
+function blockWorkHours(startTime: string, endTime: string): number {
+  return (parseTimeToMinutes(endTime) - parseTimeToMinutes(startTime)) / 60;
+}
+
+function isWorkBlock(blockType: string): boolean {
+  return blockType !== "break" && blockType !== "lunch" && blockType !== "buffer";
+}
+
 export async function regeneratePlan(
   db: PrismaClient,
   userId: string,
-  fromDate?: string
+  fromDate?: string,
+  asOfMinutes?: number
 ) {
   await ensureCapacitySettings(db, userId);
   const { capacity, projectInputs, fixedInputs, adHocInputs, learningInputs } =
     await loadEngineInputs(db, userId);
 
-  const refDate = getToday();
+  const refDate = getTodayInTimezone(capacity.timezone);
+  const effectiveAsOf =
+    asOfMinutes ?? roundUpMinutes(getNowMinutesInTimezone(capacity.timezone), 15);
+
   const result = generatePlan({
     projects: projectInputs,
     fixedEvents: fixedInputs,
@@ -138,6 +183,7 @@ export async function regeneratePlan(
     settings: capacity,
     refDate,
     fromDate,
+    asOfMinutes: effectiveAsOf,
   });
 
   if (!result) return null;
@@ -226,9 +272,129 @@ export async function regeneratePlan(
   return result;
 }
 
+async function repackTodayPlan(db: PrismaClient, userId: string) {
+  const { capacity, projectInputs, fixedInputs, adHocInputs, learningInputs } =
+    await loadEngineInputs(db, userId);
+
+  const timezone = capacity.timezone;
+  const today = getTodayInTimezone(timezone);
+  const nowMinutes = roundUpMinutes(getNowMinutesInTimezone(timezone), 15);
+  const weekStart = getWeekStart(new Date(`${today}T12:00:00`));
+
+  const weekly = await db.weeklyPlan.findUnique({
+    where: { userId_weekStart: { userId, weekStart: new Date(weekStart) } },
+    include: {
+      allocations: true,
+      dailyPlans: { include: { blocks: true } },
+    },
+  });
+
+  if (!weekly) {
+    await regeneratePlan(db, userId, today, nowMinutes);
+    return;
+  }
+
+  const remainingByProject = new Map<string, number>();
+  for (const a of weekly.allocations) {
+    remainingByProject.set(a.projectId, Number(a.plannedHours));
+  }
+
+  for (const d of getRemainingWeekDates(weekStart, weekStart)) {
+    if (d >= today) break;
+    const day = weekly.dailyPlans.find((dp) => toDateStr(dp.date) === d);
+    if (!day) continue;
+    for (const b of day.blocks) {
+      if (!b.projectId || !isWorkBlock(b.blockType)) continue;
+      const cur = remainingByProject.get(b.projectId) ?? 0;
+      remainingByProject.set(b.projectId, Math.max(0, cur - blockWorkHours(b.startTime, b.endTime)));
+    }
+  }
+
+  const todayPlan = weekly.dailyPlans.find((dp) => toDateStr(dp.date) === today);
+  if (todayPlan) {
+    for (const b of todayPlan.blocks) {
+      if (!b.projectId || !isWorkBlock(b.blockType)) continue;
+      if (parseTimeToMinutes(b.endTime) > nowMinutes) continue;
+      const cur = remainingByProject.get(b.projectId) ?? 0;
+      remainingByProject.set(b.projectId, Math.max(0, cur - blockWorkHours(b.startTime, b.endTime)));
+    }
+  }
+
+  const active = projectInputs.filter((p) => p.status === "active");
+  if (active.length === 0) return;
+
+  const projectReasons = buildProjectReasons(
+    projectInputs,
+    learningInputs,
+    fixedInputs,
+    adHocInputs,
+    today
+  );
+
+  const dow = getDayOfWeek(today);
+  const dayCapacity = capacity.weekdayHours[String(dow)] ?? capacity.dailyCapacityHours;
+
+  const { blocks } = packDay({
+    date: today,
+    dayCapacityHours: dayCapacity,
+    remainingHours: new Map(remainingByProject),
+    projects: active,
+    fixedEvents: fixedInputs,
+    settings: capacity,
+    sortOrderStart: 0,
+    projectReasons,
+    effectiveStartMinutes: nowMinutes,
+  });
+
+  const dailyPlan = await db.dailyPlan.upsert({
+    where: { userId_date: { userId, date: new Date(today) } },
+    create: {
+      userId,
+      weeklyPlanId: weekly.id,
+      date: new Date(today),
+      totalCapacityHours: dayCapacity,
+    },
+    update: {
+      weeklyPlanId: weekly.id,
+      totalCapacityHours: dayCapacity,
+      generatedAt: new Date(),
+    },
+  });
+
+  await db.scheduleBlock.deleteMany({ where: { dailyPlanId: dailyPlan.id } });
+  for (const b of blocks) {
+    await db.scheduleBlock.create({
+      data: {
+        dailyPlanId: dailyPlan.id,
+        startTime: b.startTime,
+        endTime: b.endTime,
+        blockType: b.blockType,
+        projectId: b.projectId,
+        fixedEventId: b.fixedEventId,
+        isLocked: b.isLocked,
+        sortOrder: b.sortOrder,
+        reasonShort: b.reasonShort,
+      },
+    });
+  }
+}
+
 export async function getTodayPlan(db: PrismaClient, userId: string) {
-  const today = getToday();
-  let plan = await db.dailyPlan.findUnique({
+  await ensureCapacitySettings(db, userId);
+  const settings = await db.capacitySettings.findUnique({ where: { userId } });
+  const timezone = settings?.timezone ?? DEFAULT_CAPACITY.timezone;
+  const today = getTodayInTimezone(timezone);
+  const nowMinutes = getNowMinutesInTimezone(timezone);
+
+  const closed = await db.executionReport.findUnique({
+    where: { userId_date: { userId, date: new Date(today) } },
+  });
+
+  if (!closed) {
+    await repackTodayPlan(db, userId);
+  }
+
+  const plan = await db.dailyPlan.findUnique({
     where: { userId_date: { userId, date: new Date(today) } },
     include: {
       blocks: {
@@ -238,9 +404,9 @@ export async function getTodayPlan(db: PrismaClient, userId: string) {
     },
   });
 
-  if (!plan) {
-    await regeneratePlan(db, userId);
-    plan = await db.dailyPlan.findUnique({
+  if (!plan && !closed) {
+    await regeneratePlan(db, userId, today, roundUpMinutes(nowMinutes, 15));
+    const retry = await db.dailyPlan.findUnique({
       where: { userId_date: { userId, date: new Date(today) } },
       include: {
         blocks: {
@@ -249,13 +415,24 @@ export async function getTodayPlan(db: PrismaClient, userId: string) {
         },
       },
     });
+    return {
+      plan: retry,
+      today,
+      isClosed: false,
+      nowTime: formatMinutesAsTime(nowMinutes),
+      nowMinutes,
+      timezone,
+    };
   }
 
-  const closed = await db.executionReport.findUnique({
-    where: { userId_date: { userId, date: new Date(today) } },
-  });
-
-  return { plan, today, isClosed: !!closed };
+  return {
+    plan,
+    today,
+    isClosed: !!closed,
+    nowTime: formatMinutesAsTime(nowMinutes),
+    nowMinutes,
+    timezone,
+  };
 }
 
 export async function getWeekPlan(db: PrismaClient, userId: string) {
@@ -291,7 +468,9 @@ export async function getWeekPlan(db: PrismaClient, userId: string) {
 }
 
 export async function getMonthPlan(db: PrismaClient, userId: string) {
-  const monthStart = new Date(getToday().slice(0, 7) + "-01");
+  const settings = await db.capacitySettings.findUnique({ where: { userId } });
+  const timezone = settings?.timezone ?? DEFAULT_CAPACITY.timezone;
+  const monthStart = new Date(getTodayInTimezone(timezone).slice(0, 7) + "-01");
   let monthly = await db.monthlyPlan.findUnique({
     where: { userId_monthStart: { userId, monthStart } },
   });

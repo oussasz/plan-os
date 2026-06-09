@@ -2,6 +2,56 @@ export function getToday(): string {
   return new Date().toISOString().split("T")[0]!;
 }
 
+export function getLocalParts(
+  timezone: string,
+  date = new Date()
+): { year: string; month: string; day: string; hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "0";
+  const hourRaw = get("hour");
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: Number(hourRaw === "24" ? "0" : hourRaw),
+    minute: Number(get("minute")),
+  };
+}
+
+export function getTodayInTimezone(timezone: string, date = new Date()): string {
+  const { year, month, day } = getLocalParts(timezone, date);
+  return `${year}-${month}-${day}`;
+}
+
+export function getNowMinutesInTimezone(timezone: string, date = new Date()): number {
+  const { hour, minute } = getLocalParts(timezone, date);
+  return hour * 60 + minute;
+}
+
+export function roundUpMinutes(minutes: number, step: number): number {
+  return Math.ceil(minutes / step) * step;
+}
+
+export function formatMinutesAsTime(minutes: number): string {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+export function parseTimeToMinutes(time: string): number {
+  const [h, m] = time.split(":").map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
 export function addDays(dateStr: string, days: number): string {
   const d = new Date(dateStr);
   d.setDate(d.getDate() + days);

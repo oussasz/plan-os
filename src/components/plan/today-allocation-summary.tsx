@@ -24,10 +24,23 @@ function blockHours(start: string, end: string): number {
   return ((eh! * 60 + em!) - (sh! * 60 + sm!)) / 60;
 }
 
-export function TodayAllocationSummary({ blocks }: { blocks: Block[] }) {
-  const workBlocks = blocks.filter(
-    (b) => !["break", "lunch", "buffer"].includes(b.blockType) && b.projectId
-  );
+function parseTimeToMinutes(time: string): number {
+  const [h, m] = time.split(":").map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+export function TodayAllocationSummary({
+  blocks,
+  nowMinutes,
+}: {
+  blocks: Block[];
+  nowMinutes?: number;
+}) {
+  const workBlocks = blocks.filter((b) => {
+    if (["break", "lunch", "buffer"].includes(b.blockType) || !b.projectId) return false;
+    if (nowMinutes === undefined) return true;
+    return parseTimeToMinutes(b.endTime) > nowMinutes;
+  });
 
   const byProject = new Map<
     string,
@@ -52,7 +65,11 @@ export function TodayAllocationSummary({ blocks }: { blocks: Block[] }) {
   }
 
   const bufferHours = blocks
-    .filter((b) => b.blockType === "buffer")
+    .filter((b) => {
+      if (b.blockType !== "buffer") return false;
+      if (nowMinutes === undefined) return true;
+      return parseTimeToMinutes(b.endTime) > nowMinutes;
+    })
     .reduce((s, b) => s + blockHours(b.startTime, b.endTime), 0);
 
   const rows = [...byProject.values()].sort((a, b) => b.hours - a.hours);
@@ -62,7 +79,7 @@ export function TodayAllocationSummary({ blocks }: { blocks: Block[] }) {
   return (
     <section className="mb-6 rounded-xl border border-violet-100 bg-violet-50/50 p-4">
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-violet-700">
-        Today&apos;s Plan
+        Remaining Today
       </h2>
       <ul className="space-y-2">
         {rows.map((row) => (
