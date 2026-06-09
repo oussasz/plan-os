@@ -36,3 +36,5 @@ Sign in with credentials from `.env` (`AUTH_EMAIL` / `AUTH_PASSWORD`, defaults i
 - **Repo:** https://github.com/oussasz/plan-os
 
 Required env vars: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_EMAIL`, `AUTH_PASSWORD`.
+
+**Supabase pooling (required on Vercel):** use the **transaction pooler** on port **6543** with `?pgbouncer=true&connection_limit=1`. Port 5432 is *session mode* (~15 connection cap) and will throw `max clients reached` under load. The app auto-upgrades `:5432` pooler URLs at runtime, but set Vercel `DATABASE_URL` to `:6543` explicitly.

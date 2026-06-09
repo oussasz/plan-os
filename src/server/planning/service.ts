@@ -135,6 +135,10 @@ async function loadEngineInputs(db: PrismaClient, userId: string) {
   return { capacity, projectInputs, fixedInputs, adHocInputs, learningInputs };
 }
 
+type EngineInputs = Awaited<ReturnType<typeof loadEngineInputs>>;
+
+const REPACK_INTERVAL_MS = 120_000;
+
 export async function ensureCapacitySettings(db: PrismaClient, userId: string) {
   return db.capacitySettings.upsert({
     where: { userId },
@@ -257,10 +261,11 @@ async function computeTodayCognitiveState(
     nowMinutes: number;
     timezone: string;
     reallocations?: ReallocationRecord[];
+    inputs?: EngineInputs;
   }
 ): Promise<CognitiveDayState | null> {
   const { capacity, projectInputs, fixedInputs, adHocInputs, learningInputs } =
-    await loadEngineInputs(db, userId);
+    input.inputs ?? (await loadEngineInputs(db, userId));
 
   const weekStart = getWeekStart(new Date(`${input.today}T12:00:00`));
   const [weekExecution, todayExecution, weekly] = await Promise.all([
@@ -497,9 +502,13 @@ export async function regeneratePlan(
   return result;
 }
 
-async function repackTodayPlan(db: PrismaClient, userId: string) {
+async function repackTodayPlan(
+  db: PrismaClient,
+  userId: string,
+  preloaded?: EngineInputs
+) {
   const { capacity, projectInputs, fixedInputs, adHocInputs, learningInputs } =
-    await loadEngineInputs(db, userId);
+    preloaded ?? (await loadEngineInputs(db, userId));
 
   const timezone = capacity.timezone;
   const today = getTodayInTimezone(timezone);
@@ -610,37 +619,50 @@ async function repackTodayPlan(db: PrismaClient, userId: string) {
     },
   });
 
-  await db.scheduleBlock.deleteMany({ where: { dailyPlanId: dailyPlan.id } });
-  for (const b of blocks) {
-    await db.scheduleBlock.create({
-      data: {
-        dailyPlanId: dailyPlan.id,
-        startTime: b.startTime,
-        endTime: b.endTime,
-        blockType: b.blockType,
-        projectId: b.projectId,
-        fixedEventId: b.fixedEventId,
-        isLocked: b.isLocked,
-        sortOrder: b.sortOrder,
-        reasonShort: b.reasonShort,
-      },
-    });
-  }
+  await db.$transaction(async (tx) => {
+    await tx.scheduleBlock.deleteMany({ where: { dailyPlanId: dailyPlan.id } });
+    if (blocks.length > 0) {
+      await tx.scheduleBlock.createMany({
+        data: blocks.map((b) => ({
+          dailyPlanId: dailyPlan.id,
+          startTime: b.startTime,
+          endTime: b.endTime,
+          blockType: b.blockType,
+          projectId: b.projectId,
+          fixedEventId: b.fixedEventId,
+          isLocked: b.isLocked,
+          sortOrder: b.sortOrder,
+          reasonShort: b.reasonShort,
+        })),
+      });
+    }
+  });
 }
 
 export async function getTodayPlan(db: PrismaClient, userId: string) {
   await ensureCapacitySettings(db, userId);
-  const settings = await db.capacitySettings.findUnique({ where: { userId } });
-  const timezone = settings?.timezone ?? DEFAULT_CAPACITY.timezone;
+  const inputs = await loadEngineInputs(db, userId);
+  const timezone = inputs.capacity.timezone;
   const today = getTodayInTimezone(timezone);
   const nowMinutes = getNowMinutesInTimezone(timezone);
 
-  const closed = await db.executionReport.findUnique({
-    where: { userId_date: { userId, date: new Date(today) } },
-  });
+  const [closed, existingPlan] = await Promise.all([
+    db.executionReport.findUnique({
+      where: { userId_date: { userId, date: new Date(today) } },
+    }),
+    db.dailyPlan.findUnique({
+      where: { userId_date: { userId, date: new Date(today) } },
+      select: { generatedAt: true },
+    }),
+  ]);
 
-  if (!closed) {
-    await repackTodayPlan(db, userId);
+  const shouldRepack =
+    !closed &&
+    (!existingPlan ||
+      Date.now() - existingPlan.generatedAt.getTime() > REPACK_INTERVAL_MS);
+
+  if (shouldRepack) {
+    await repackTodayPlan(db, userId, inputs);
   }
 
   const plan = await db.dailyPlan.findUnique({
@@ -669,6 +691,7 @@ export async function getTodayPlan(db: PrismaClient, userId: string) {
       today,
       nowMinutes,
       timezone,
+      inputs,
     });
     return {
       plan: retry,
@@ -686,6 +709,7 @@ export async function getTodayPlan(db: PrismaClient, userId: string) {
     today,
     nowMinutes,
     timezone,
+    inputs,
   });
 
   return {
